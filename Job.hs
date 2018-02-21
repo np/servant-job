@@ -1,13 +1,14 @@
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE KindSignatures #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeOperators #-}
 {-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE TypeFamilies #-}
-module Job
+module Job.Job
   -- Essentials
   ( JobAPI
 
@@ -19,7 +20,11 @@ module Job
 
   , JobStatus
   , job_id
+  , job_log
   , job_status
+
+  , JobOutput
+  , job_output
 
   , JobEnv
   , newJobEnv
@@ -49,6 +54,7 @@ module Job
   , killJob
   , waitJob
   , isValidJob
+  , forgetJobID
   )
   where
 
@@ -78,7 +84,7 @@ import Web.HttpApiData (ToHttpApiData(toUrlPiece), parseUrlPiece)
 
 -- import Debug.Trace
 
-import Lib.Utils ((?!))
+import Job.Utils (jsonOptions, swaggerOptions, (?!))
 
 type LBS = LBS.ByteString
 
@@ -91,79 +97,97 @@ data JobID (s :: Safety) = PrivateJobID
   , _job_time   :: UTCTime
   , _job_token  :: String
   }
+  deriving (Eq, Ord)
 
-data Job a = Job
+data Job e a = Job
   { _job_async   :: !(Async a)
+  , _job_get_log :: !(IO [e])
   , _job_timeout :: !UTCTime
   }
 
-data Jobs a = Jobs
-  { _job_map  :: !(IntMap.IntMap (Job a))
+data Jobs e a = Jobs
+  { _job_map  :: !(IntMap.IntMap (Job e a))
   , _job_next :: !Int
   }
 
-data JobEnv a = JobEnv
+data JobEnv e a = JobEnv
   { _job_env_secret_key :: !SecretKey
-  , _job_env_jobs_mvar  :: !(MVar (Jobs a))
+  , _job_env_jobs_mvar  :: !(MVar (Jobs e a))
   , _job_env_duration   :: !NominalDiffTime
   -- ^ This duration specifies for how long one can ask the result of the job.
   -- Since job identifiers are of type 'Int' the number of jobs should not
   -- exceed the bounds of integers within this duration.
   }
 
+newtype JobOutput a = JobOutput
+  { _job_output :: a }
+  deriving Generic
+
+makeLenses ''JobOutput
+
+instance FromJSON o => FromJSON (JobOutput o) where
+  parseJSON = genericParseJSON $ jsonOptions "_job_"
+
 data JobStatus safety = JobStatus
   { _job_id     :: !(JobID safety)
+  , _job_log    :: ![Value]
   , _job_status :: !Text
   }
   deriving Generic
 
-type JobAPI ci i co o
-    =  ReqBody ci i                           :> Post '[JSON] (JobStatus 'Safe)
-  :<|> Capture "id" (JobID 'Unsafe) :> "kill" :> Post '[JSON] (JobStatus 'Safe)
-  :<|> Capture "id" (JobID 'Unsafe) :> "poll" :> Get  '[JSON] (JobStatus 'Safe)
-  :<|> Capture "id" (JobID 'Unsafe) :> "wait" :> Get co o
-
-modifier :: Text -> String -> String
-modifier pref field = T.unpack $ T.stripPrefix pref (T.pack field) ?! "Expecting prefix " <> T.unpack pref
-
-jsonOptions :: Text -> Options
-jsonOptions pref = defaultOptions
-  { Data.Aeson.Types.fieldLabelModifier = modifier pref
-  , Data.Aeson.Types.unwrapUnaryRecords = True
-  , Data.Aeson.Types.omitNothingFields = True }
-
-swaggerOptions :: Text -> SchemaOptions
-swaggerOptions pref = defaultSchemaOptions
-  { Data.Swagger.fieldLabelModifier = modifier pref
-  , Data.Swagger.unwrapUnaryRecords = True
-  }
+type JobAPI safety safetyo ci i co o
+    =  ReqBody ci i                          :> Post '[JSON] (JobStatus safetyo)
+  :<|> Capture "id" (JobID safety) :> "kill" :> Post '[JSON] (JobStatus safetyo)
+  :<|> Capture "id" (JobID safety) :> "poll" :> Get  '[JSON] (JobStatus safetyo)
+                                                 -- TODO: Add a query param to
+                                                 -- drop part of the log in
+                                                 -- kill/poll
+  :<|> Capture "id" (JobID safety) :> "wait" :> Get co (JobOutput o)
 
 makeLensesWith (lensRules & generateSignatures .~ False) ''JobID
+job_number :: Lens' (JobID safety) Int
+job_time   :: Lens' (JobID safety) UTCTime
+job_token  :: Lens' (JobID safety) String
+{-
 job_number :: Lens' (JobID 'Safe) Int
 job_time   :: Lens' (JobID 'Safe) UTCTime
 job_token  :: Lens' (JobID 'Safe) String
+-}
 
 makeLenses ''Job
 makeLenses ''JobEnv
 makeLenses ''Jobs
 makeLenses ''JobStatus
 
-emptyJobs :: Jobs a
+emptyJobs :: Jobs e a
 emptyJobs = Jobs mempty 0
 
 instance safety ~ 'Safe => ToJSON (JobStatus safety) where
   toJSON = genericToJSON $ jsonOptions "_job_"
 
+{-
+instance FromJSON (JobStatus 'Unsafe) where
+  parseJSON = genericParseJSON $ jsonOptions "_job_"
+
+instance FromJSON (JobStatus 'Safe) where
+  parseJSON = genericParseJSON $ jsonOptions "_job_"
+-}
+
 instance safety ~ 'Unsafe => FromJSON (JobStatus safety) where
   parseJSON = genericParseJSON $ jsonOptions "_job_"
 
+{-
 instance ToSchema (JobStatus safety) where
   declareNamedSchema = genericDeclareNamedSchema $ swaggerOptions "_job_"
+-}
 
 macJobID :: SecretKey -> UTCTime -> Int -> String
 macJobID (SecretKey s) now n =
   showDigest . hmacSha256 s . LBS.fromStrict . E.encodeUtf8 $
     T.unwords [toUrlPiece (utcTimeToPOSIXSeconds now), toUrlPiece n]
+
+forgetJobID :: JobID safety -> JobID safety2
+forgetJobID (PrivateJobID x y z) = PrivateJobID x y z
 
 newJobID :: SecretKey -> UTCTime -> Int -> JobID 'Safe
 newJobID s t n = PrivateJobID n t $ macJobID s t n
@@ -179,7 +203,7 @@ instance safety ~ 'Unsafe => FromHttpApiData (JobID safety) where
                            <*> parseUrlPiece d
       _ -> Left "Invalid job identifier (expecting 3 parts separated by '-')"
 
-instance safety ~ 'Safe => ToHttpApiData (JobID safety) where
+instance {-safety ~ 'Safe =>-} ToHttpApiData (JobID safety) where
   toUrlPiece j =
     T.intercalate "-" [ toUrlPiece (j ^. job_number)
                       , toUrlPiece (utcTimeToPOSIXSeconds (j ^. job_time))
@@ -188,8 +212,16 @@ instance safety ~ 'Safe => ToHttpApiData (JobID safety) where
 instance safety ~ 'Unsafe => FromJSON (JobID safety) where
   parseJSON s = either (fail . T.unpack) pure . parseUrlPiece =<< parseJSON s
 
-instance safety ~ 'Safe => ToJSON (JobID safety) where
+instance {-safety ~ 'Safe =>-} ToJSON (JobID safety) where
   toJSON = toJSON . toUrlPiece
+
+{-
+instance ToJSON (JobID 'Safe) where
+  toJSON = toJSON . toUrlPiece
+
+instance ToJSON (JobID 'Unsafe) where
+  toJSON = toJSON . toUrlPiece
+-}
 
 instance ToParamSchema (JobID safety) where
   toParamSchema _ = mempty
@@ -205,7 +237,7 @@ instance ToSchema (JobID safety) where
 defaultDuration :: NominalDiffTime
 defaultDuration = 86400 -- it is called nominalDay in time >= 1.8
 
-newJobEnv :: IO (JobEnv a)
+newJobEnv :: IO (JobEnv e a)
 newJobEnv = do
   s <- generateSecretKey
   v <- newMVar emptyJobs
@@ -214,14 +246,14 @@ newJobEnv = do
 generateSecretKey :: IO SecretKey
 generateSecretKey = SecretKey <$> withBinaryFile "/dev/random" ReadMode (\h -> LBS.hGet h 16)
 
-deleteJob :: MonadIO m => JobEnv a -> JobID 'Safe -> m ()
+deleteJob :: MonadIO m => JobEnv e a -> JobID 'Safe -> m ()
 deleteJob env jid =
   liftIO . modifyMVar_ (env ^. job_env_jobs_mvar) $ pure . (job_map . at (jid ^. job_number) .~ Nothing)
 
-isValidJob :: UTCTime -> Job a -> Bool
+isValidJob :: UTCTime -> Job e a -> Bool
 isValidJob now job = now < job ^. job_timeout
 
-deleteExpiredJobs :: JobEnv a -> IO ()
+deleteExpiredJobs :: JobEnv e a -> IO ()
 deleteExpiredJobs env = do
   expired <- modifyMVar (env ^. job_env_jobs_mvar) gcJobs
   mapM_ gcJob (expired ^.. each)
@@ -233,18 +265,18 @@ deleteExpiredJobs env = do
       pure (jobs & job_map .~ valid, expired)
     gcJob job = cancel $ job ^. job_async
 
-deleteExpiredJobsPeriodically :: Int -> JobEnv a -> IO ()
+deleteExpiredJobsPeriodically :: Int -> JobEnv e a -> IO ()
 deleteExpiredJobsPeriodically delay env = do
   threadDelay delay
   deleteExpiredJobs env
   deleteExpiredJobsPeriodically delay env
 
-deleteExpiredJobsHourly :: JobEnv a -> IO ()
+deleteExpiredJobsHourly :: JobEnv e a -> IO ()
 deleteExpiredJobsHourly = deleteExpiredJobsPeriodically hourly
   where
     hourly = 1000000 * 60 * 60
 
-checkJobID :: JobEnv a -> JobID 'Unsafe -> Handler (JobID 'Safe)
+checkJobID :: JobEnv e a -> JobID 'Unsafe -> Handler (JobID 'Safe)
 checkJobID env (PrivateJobID n t d) = do
   now <- liftIO getCurrentTime
   when (now > addUTCTime (env ^. job_env_duration) t) $
@@ -253,19 +285,39 @@ checkJobID env (PrivateJobID n t d) = do
     throwError $ err401 { errBody = "Invalid job identifier authentication code" }
   pure $ PrivateJobID n t d
 
-newJob :: MonadIO m => JobEnv a -> IO a -> m (JobStatus 'Safe)
-newJob env task = liftIO $ do
-  a <- async task
+newJob :: MonadIO m => JobEnv e a -> JobFunction e a -> m (JobStatus 'Safe)
+newJob env (JobFunction task) = liftIO $ do
+  log <- newMVar []
+  a <- task (pushLog log)
   now <- getCurrentTime
-  let job = Job a $ addUTCTime (env ^. job_env_duration) now
+  let job = Job a (readLog log) $ addUTCTime (env ^. job_env_duration) now
   jid <- modifyMVar (env ^. job_env_jobs_mvar) $ \jobs ->
     let n = jobs ^. job_next in
     pure (jobs & job_map . at n ?~ job
                & job_next +~ 1,
           newJobID (env ^. job_env_secret_key) now n)
-  pure $ JobStatus jid "started"
+  pure $ JobStatus jid [] "running"
 
-getJob :: JobEnv a -> JobID 'Safe -> Handler (Job a)
+  where
+    pushLog :: MVar [e] -> e -> IO ()
+    pushLog m x = modifyMVar_ m (pure . (x :))
+
+    readLog :: MVar [e] -> IO [e]
+    readLog = readMVar
+
+asyncJobFunction :: IO (Async a) -> JobFunction e a
+asyncJobFunction = JobFunction . const
+
+ioJobFunction :: IO a -> JobFunction e a
+ioJobFunction = asyncJobFunction . async
+
+newAsyncJob :: MonadIO m => JobEnv e a -> IO (Async a) -> m (JobStatus 'Safe)
+newAsyncJob env = newJob env . asyncJobFunction
+
+newIOJob :: MonadIO m => JobEnv e a -> IO a -> m (JobStatus 'Safe)
+newIOJob env = newAsyncJob env . async
+
+getJob :: JobEnv e a -> JobID 'Safe -> Handler (Job e a)
 getJob env jid = do
   m <- liftIO . readMVar $ env ^. job_env_jobs_mvar
   maybe notFound pure $ m ^. job_map . at (jid ^. job_number)
@@ -273,38 +325,64 @@ getJob env jid = do
   where
     notFound = throwError $ err404 { errBody = "No such job" }
 
-pollJob :: MonadIO m => JobEnv a -> JobID 'Safe -> Job a -> m (JobStatus 'Safe)
+pollJob :: (ToJSON e, MonadIO m) => JobEnv e a -> JobID 'Safe -> Job e a -> m (JobStatus 'Safe)
 pollJob _env jid job = do
+  -- It would be tempting to ensure that the log is consistent with the result
+  -- of the polling by "locking" the log. Instead for simplicity we read the
+  -- log after polling the job. The edge case being that the log shows more
+  -- items which would tell that the job is actually finished while the
+  -- returned status is running.
   r <- liftIO . poll $ job ^. job_async
-  pure . JobStatus jid $ maybe "running" (either failed (const "finished")) r
+  log <- fmap (map toJSON) . liftIO $ job ^. job_get_log
+  pure . JobStatus jid log $ maybe "running" (either failed (const "finished")) r
 
   where
     failed = ("failed " <>) . T.pack . show
 
-killJob :: MonadIO m => JobEnv a -> JobID 'Safe -> Job a -> m (JobStatus 'Safe)
+killJob :: (ToJSON e, MonadIO m) => JobEnv e a -> JobID 'Safe -> Job e a -> m (JobStatus 'Safe)
 killJob env jid job = do
   liftIO . cancel $ job ^. job_async
+  log <- fmap (map toJSON) . liftIO $ job ^. job_get_log
   deleteJob env jid
-  pure $ JobStatus jid "killed"
+  pure $ JobStatus jid log "killed"
 
-waitJob :: JobEnv a -> JobID 'Safe -> Job a -> Handler a
-waitJob env jid job = do
+waitJob :: Bool -> JobEnv e a -> JobID 'Safe -> Job e a -> Handler (JobOutput a)
+waitJob alsoDeleteJob env jid job = do
   r <- either err pure =<< liftIO (waitCatch $ job ^. job_async)
-  deleteJob env jid
-  pure r
+  -- NOTE one might prefer not to deleteJob here and ask the client to
+  -- manually killJob.
+  --
+  -- deleteJob:
+  --   Pros: no need to killJob manually (less code, more efficient)
+  --   Cons:
+  --     * if the client miss the response to waitJob, it cannot
+  --       pollJob or waitJob again as it is deleted.
+  --     * the client cannot call pollJob/killJob after the waitJob to get
+  --       the final log
+  --
+  -- Hence the alsoDeleteJob parameter
+  when alsoDeleteJob $ deleteJob env jid
+  pure $ JobOutput r
 
   where
     err e = throwError $ err500 { errBody = LBS.pack $ show e }
 
-serveJobAPI :: forall i o ci co. JobEnv o -> (i -> IO o) -> Server (JobAPI ci i co o)
+newtype JobFunction e o = JobFunction
+  { runJobFunction :: (e -> IO ()) -> IO (Async o) }
+
+serveJobAPI :: forall e i o ci co. ToJSON e
+            => JobEnv e o
+            -> (i -> JobFunction e o)
+            -> Server (JobAPI 'Unsafe 'Safe ci i co o)
 serveJobAPI env f
     =  newJob env . f -- (\x -> threadDelay 5000000 >> f x)
   :<|> wrap killJob
   :<|> wrap pollJob
-  :<|> wrap waitJob
+  :<|> (wrap . waitJob) False
 
   where
-    wrap :: forall a. (JobEnv o -> JobID 'Safe -> Job o -> Handler a) -> JobID 'Unsafe -> Handler a
+    wrap :: forall a. (JobEnv e o -> JobID 'Safe -> Job e o -> Handler a)
+                   -> JobID 'Unsafe -> Handler a
     wrap g jid' = do
       jid <- checkJobID env jid'
       job <- getJob env jid
