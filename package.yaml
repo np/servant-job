@@ -1,0 +1,65 @@
+name:                servant-async
+version:             0.1.0.0
+github:              TODO np/servant-async TODO
+license:             BSD3
+author:              "Nicolas Pouillard"
+maintainer:          "nicolas.pouillard@gmail.com"
+copyright:           "2018 Nicolas Pouillard"
+
+extra-source-files:
+- README.md
+
+# Metadata used when publishing your package
+# synopsis:            Short description of your package
+# category:            Web
+
+description: Please see the README on Github at <https://github.com/np/servant-async#readme>
+
+dependencies:
+- aeson
+- async
+- base >= 4.7 && < 5
+- bytestring
+- containers
+- http-api-data
+- http-client
+- lens
+- mtl
+- SHA
+- servant >= 0.13
+- servant-client >= 0.13
+- servant-server >= 0.13
+- servant-swagger >= 1.1.5
+- split
+- swagger2
+- text
+- time
+
+library:
+  source-dirs: src
+  exposed-modules:
+  - Servant.Async.Job
+  - Servant.Async.Utils
+  - Servant.Async.Client
+
+# executables:
+#   servant-async-exe:
+#     main:                Main.hs
+#     source-dirs:         app
+#     ghc-options:
+#     - -threaded
+#     - -rtsopts
+#     - -with-rtsopts=-N
+#     dependencies:
+#     - servant-async
+
+# tests:
+#   servant-async-test:
+#     main:                Spec.hs
+#     source-dirs:         test
+#     ghc-options:
+#     - -threaded
+#     - -rtsopts
+#     - -with-rtsopts=-N
+#     dependencies:
+#     - servant-async

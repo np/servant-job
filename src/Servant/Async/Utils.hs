@@ -1,26 +1,16 @@
 {-# LANGUAGE DataKinds, TypeOperators, ConstraintKinds, FlexibleContexts,
              TemplateHaskell, GeneralizedNewtypeDeriving, StandaloneDeriving #-}
 {-# OPTIONS -fno-warn-orphans #-}
-module Job.Utils ( module Job.Utils, trace ) where
+module Servant.Async.Utils ( module Servant.Async.Utils, trace ) where
 
---import Control.Monad.Logic
---import Control.Monad.Random hiding (interleave)
 import Data.Aeson
 import Data.Aeson.Types
---import Data.Hashable (Hashable)
---import Data.HashMap.Lazy (HashMap)
-import Data.List
-import Data.List.Split
 import Data.Maybe
 import Data.Monoid
-import Data.Ord
 import Data.Swagger
 import Data.Text (Text)
 import qualified Data.Text as T
 import Debug.Trace
-import System.IO
-import System.IO.Unsafe
-import qualified Data.HashMap.Lazy as HashMap
 
 nil :: Monoid m => m
 nil = mempty
