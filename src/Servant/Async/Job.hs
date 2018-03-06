@@ -24,12 +24,13 @@ module Servant.Async.Job
   , job_log
   , job_status
 
-  , JobOutput
+  , JobOutput(JobOutput)
   , job_output
 
   , JobFunction(JobFunction)
   , asyncJobFunction
   , ioJobFunction
+  , pureJobFunction
   , newAsyncJob
   , newIOJob
 
@@ -328,6 +329,9 @@ asyncJobFunction = JobFunction . const
 
 ioJobFunction :: IO a -> JobFunction e a
 ioJobFunction = asyncJobFunction . async
+
+pureJobFunction :: a -> JobFunction e a
+pureJobFunction = ioJobFunction . pure
 
 newAsyncJob :: MonadIO m => JobEnv e a -> IO (Async a) -> m (JobStatus 'Safe e)
 newAsyncJob env = newJob env . asyncJobFunction

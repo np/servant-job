@@ -1,10 +1,12 @@
-{-# LANGUAGE ScopedTypeVariables, GeneralizedNewtypeDeriving, KindSignatures, DataKinds, DeriveGeneric, TemplateHaskell, TypeOperators, FlexibleContexts, OverloadedStrings, RankNTypes, GADTs #-}
+{-# LANGUAGE ScopedTypeVariables, GeneralizedNewtypeDeriving, KindSignatures, DataKinds, DeriveGeneric, TemplateHaskell, TypeOperators, FlexibleContexts, OverloadedStrings, RankNTypes, GADTs, GeneralizedNewtypeDeriving #-}
 module Servant.Async.Client where
 
 import Control.Concurrent (threadDelay)
 import Control.Concurrent.MVar (MVar, newMVar, readMVar, modifyMVar_)
 import Control.Lens
 import Control.Monad
+import Control.Monad.IO.Class
+import Control.Monad.Reader
 import Data.Aeson
 import GHC.Generics hiding (to)
 import Servant
@@ -92,7 +94,7 @@ jobAPI :: proxy e i o -> Proxy (JobAPI' 'Unsafe 'Unsafe '[JSON] '[JSON] e i o)
 jobAPI _ = Proxy
 
 class Monad m => MonadJob m where
-  callJob :: (ToJSON i, FromJSON o) => JobServerURL e i o -> i -> m o
+  callJob :: (ToJSON e, FromJSON e, ToJSON i, FromJSON o) => JobServerURL e i o -> i -> m o
 
 -- TODO
 isTransientFailure :: ServantError -> Bool
@@ -100,8 +102,8 @@ isTransientFailure _ = False
 
 -- TODO
 retryOnTransientFailure :: IO (Either ServantError a) -> IO a
-retryOnTransientFailure = undefined
-{-
+-- retryOnTransientFailure = undefined
+-- {-
 retryOnTransientFailure m = do
   esa <- m
   case esa of
@@ -109,9 +111,9 @@ retryOnTransientFailure m = do
       if isTransientFailure s then
         retryOnTransientFailure m
       else
-        throwError s
+        error (show s) -- throwError s
     Right a -> pure a
--}
+-- -}
 data RunningJob e i o = PrivateRunningJob
   { _running_job_url :: URL
   , _running_job_api :: JobServerAPI
@@ -128,12 +130,12 @@ instance ToJSON (RunningJob e i o) where
   toJSON = genericToJSON $ jsonOptions "_running_job_"
 
 data Event e i o
-  = NewTask  { _event_url :: JobServerURL e i o }
-  | Started  { _event_url    :: JobServerURL e i o
+  = NewTask  { _event_server :: JobServerURL e i o }
+  | Started  { _event_server :: JobServerURL e i o
              , _event_job_id :: Maybe (JobID 'Unsafe) }
-  | Finished { _event_url    :: JobServerURL e i o
+  | Finished { _event_server :: JobServerURL e i o
              , _event_job_id :: Maybe (JobID 'Unsafe) }
-  | Event    { _event_url    :: JobServerURL e i o
+  | Event    { _event_server :: JobServerURL e i o
              , _event_job_id :: Maybe (JobID 'Unsafe)
              , _event_event  :: e }
   deriving (Generic)
@@ -186,7 +188,7 @@ clientStreamJob env jurl input = do
           missingOutput = convertError "Missing output"
           onFrame (Left err) = return (Left (convertError (T.pack err)))
           onFrame (Right (JobFrame me mo)) = do
-            mapM_ (progress env . Event jurl Nothing) me
+            forM_ me $ progress env . Event jurl Nothing
             case mo of
               Nothing -> loop
               Just o  -> return (Right o)
@@ -239,7 +241,7 @@ killRunningJobs env = do
 isFinishedJob :: JobStatus 'Unsafe e -> Bool
 isFinishedJob status = status ^. job_status == "finished"
 
-fillLog :: (ToJSON i, FromJSON o) => Env -> JobServerURL Value i o -> RunningJob Value i o -> Int -> IO ()
+fillLog :: (ToJSON e, FromJSON e, ToJSON i, FromJSON o) => Env -> JobServerURL e i o -> RunningJob e i o -> Int -> IO ()
 fillLog env jurl job pos = do
   threadDelay $ env ^. env_polling_delay_ms
   status <- retryOnTransientFailure $ clientPollJob env job
@@ -248,7 +250,7 @@ fillLog env jurl job pos = do
   unless (isFinishedJob status) $ fillLog env jurl job (pos + length events)
 
 -- TODO catch errors ?
-callJobIO :: (e ~ Value, ToJSON e, ToJSON i, FromJSON o)
+callJobIO :: (FromJSON e, ToJSON e, ToJSON i, FromJSON o)
           => Env -> JobServerURL e i o -> i -> IO o
 callJobIO env jurl input = do
   progress env $ NewTask jurl
@@ -266,15 +268,27 @@ callJobIO env jurl input = do
       _ <- clientKillJob env job
       delRunningJob env job
       pure out
-    Sync -> view job_output <$> retryOnTransientFailure (clientSyncJob env jurl input)
-    Stream -> view job_output <$> retryOnTransientFailure (clientStreamJob env jurl input)
+    Sync   -> wrap clientSyncJob
+    Stream -> wrap clientStreamJob
 
-newtype MonadJobIO a = MonadJobIO { _unMonadJobIO :: Env -> IO a }
+  where
+    wrap f = do
+      out <- view job_output <$> retryOnTransientFailure (f env jurl input)
+      progress env $ Finished jurl Nothing
+      pure out
 
-runMonadJobIO :: Manager -> (Value -> IO ()) -> MonadJobIO a -> IO a
+newtype MonadJobIO a = MonadJobIO { _unMonadJobIO :: ReaderT Env IO a }
+  deriving (Functor, Applicative, Monad, MonadReader Env, MonadIO)
+
+instance MonadJob MonadJobIO where
+  callJob jurl input = do
+    env <- ask
+    liftIO $ callJobIO env jurl input
+
+runMonadJobIO :: Manager -> (forall e i o. ToJSON e => Event e i o -> IO ()) -> MonadJobIO a -> IO a
 runMonadJobIO manager log_event (MonadJobIO m) = do
     mvar <- newMVar Set.empty
-    let env = Env manager oneSecond mvar (log_event . toJSON)
-    m env
+    let env = Env manager oneSecond mvar log_event
+    runReaderT m env
   where
     oneSecond = 1000000
