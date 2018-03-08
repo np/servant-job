@@ -1,4 +1,4 @@
-{-# LANGUAGE ScopedTypeVariables, GeneralizedNewtypeDeriving, KindSignatures, DataKinds, DeriveGeneric, TemplateHaskell, TypeOperators, FlexibleContexts, OverloadedStrings, RankNTypes, GADTs, GeneralizedNewtypeDeriving #-}
+{-# LANGUAGE ScopedTypeVariables, GeneralizedNewtypeDeriving, KindSignatures, DataKinds, DeriveGeneric, TemplateHaskell, TypeOperators, FlexibleContexts, OverloadedStrings, RankNTypes, GADTs, GeneralizedNewtypeDeriving, TypeFamilies #-}
 module Servant.Async.Client where
 
 import Control.Concurrent (threadDelay)
@@ -46,6 +46,17 @@ data JobServerAPI = Sync | Async | Stream
 
 instance ToJSON JobServerAPI
 
+instance FromHttpApiData JobServerAPI where
+  parseUrlPiece "sync"   = pure Sync
+  parseUrlPiece "async"  = pure Async
+  parseUrlPiece "stream" = pure Stream
+  parseUrlPiece _        = Left "Unexpected value of type JobServerAPI. Expecting sync, async, or stream"
+
+instance ToHttpApiData JobServerAPI where
+  toUrlPiece Sync   = "sync"
+  toUrlPiece Async  = "async"
+  toUrlPiece Stream = "stream"
+
 newtype URL = URL { _base_url :: BaseUrl } deriving (Eq, Ord)
 
 makeLenses ''URL
@@ -64,10 +75,10 @@ makeLenses ''JobServerURL
 instance ToJSON (JobServerURL e i o) where
   toJSON = genericToJSON $ jsonOptions "_job_server_"
 
-type SyncAPI i o = ReqBody '[JSON] i :> Post '[JSON] (JobOutput o)
+type SyncJobAPI i o = ReqBody '[JSON] i :> Post '[JSON] (JobOutput o)
 
-syncAPI :: proxy e i o -> Proxy (SyncAPI i o)
-syncAPI _ = Proxy
+syncJobAPI :: proxy e i o -> Proxy (SyncJobAPI i o)
+syncJobAPI _ = Proxy
 
 data JobFrame e o = JobFrame
   { job_frame_event  :: Maybe e
@@ -81,17 +92,28 @@ instance (FromJSON e, FromJSON o) => FromJSON (JobFrame e o) where
 instance (ToJSON e, ToJSON o) => ToJSON (JobFrame e o) where
   toJSON = genericToJSON $ jsonOptions "_job_frame_"
 
-type StreamAPI f e i o =
+data ClientOrServer = Client | Server
+
+type family StreamFunctor (c :: ClientOrServer) :: * -> *
+type instance StreamFunctor 'Client = ResultStream
+type instance StreamFunctor 'Server = StreamGenerator
+
+type StreamJobAPI' f e i o =
   ReqBody '[JSON] i :> StreamPost NewlineFraming JSON (f (JobFrame e o))
 
-type ServerStreamAPI e i o = StreamAPI StreamGenerator e i o
-type ClientStreamAPI e i o = StreamAPI ResultStream    e i o
+type StreamJobAPI c e i o =
+  StreamJobAPI' (StreamFunctor c) e i o
 
-clientStreamAPI :: proxy e i o -> Proxy (ClientStreamAPI e i o)
+clientStreamAPI :: proxy e i o -> Proxy (StreamJobAPI 'Client e i o)
 clientStreamAPI _ = Proxy
 
-jobAPI :: proxy e i o -> Proxy (JobAPI' 'Unsafe 'Unsafe '[JSON] '[JSON] e i o)
-jobAPI _ = Proxy
+asyncJobAPI :: proxy e i o -> Proxy (AsyncJobAPI' 'Unsafe 'Unsafe '[JSON] '[JSON] e i o)
+asyncJobAPI _ = Proxy
+
+type family JobAPI (sas :: JobServerAPI) (cs :: ClientOrServer) e i o
+type instance JobAPI 'Sync   _  _ i o = SyncJobAPI        i o
+type instance JobAPI 'Async  _  e i o = AsyncJobAPI     e i o
+type instance JobAPI 'Stream cs e i o = StreamJobAPI cs e i o
 
 class Monad m => MonadJob m where
   callJob :: (ToJSON e, FromJSON e, ToJSON i, FromJSON o) => JobServerURL e i o -> i -> m o
@@ -171,7 +193,7 @@ forgetRunningJob (PrivateRunningJob u a i) = PrivateRunningJob u a i
 clientSyncJob :: (ToJSON i, FromJSON e, FromJSON o) => Env -> JobServerURL e i o -> i
               -> IO (Either ServantError (JobOutput o))
 clientSyncJob env jurl =
-  runClientJob env (jurl ^. job_server_url) . client (syncAPI jurl)
+  runClientJob env (jurl ^. job_server_url) . client (syncJobAPI jurl)
 
   --ResultStream (forall b. (IO (Maybe (Either String a)) -> IO b) -> IO b)
 
@@ -203,7 +225,7 @@ clientNewJob :: (ToJSON i, FromJSON e, FromJSON o) => Env -> JobServerURL e i o 
              -> IO (Either ServantError (JobStatus 'Unsafe e))
 clientNewJob env jurl = runClientJob env (jurl ^. job_server_url) . newJobClient
   where
-    newJobClient :<|> _ :<|> _ :<|> _ = client $ jobAPI jurl
+    newJobClient :<|> _ :<|> _ :<|> _ = client $ asyncJobAPI jurl
 
 clientWaitJob :: (ToJSON i, FromJSON e, FromJSON o)
               => Env -> RunningJob e i o -> IO (Either ServantError o)
@@ -212,7 +234,7 @@ clientWaitJob env job =
   where
     jurl = job ^. running_job_url
     jid  = job ^. running_job_id . to forgetJobID
-    _ :<|> _ :<|> _ :<|> waitJobClient = client $ jobAPI job
+    _ :<|> _ :<|> _ :<|> waitJobClient = client $ asyncJobAPI job
 
 clientKillJob :: (ToJSON i, FromJSON e, FromJSON o) => Env -> RunningJob e i o
               -> IO (Either ServantError (JobStatus 'Unsafe e))
@@ -220,7 +242,7 @@ clientKillJob env job = runClientJob env jurl (killJobClient jid)
   where
     jurl = job ^. running_job_url
     jid  = job ^. running_job_id
-    _ :<|> killJobClient :<|> _ :<|> _ = client $ jobAPI job
+    _ :<|> killJobClient :<|> _ :<|> _ = client $ asyncJobAPI job
 
 clientPollJob :: (ToJSON i, FromJSON e, FromJSON o) => Env -> RunningJob e i o
               -> IO (Either ServantError (JobStatus 'Unsafe e))
@@ -228,7 +250,7 @@ clientPollJob env job = runClientJob env jurl (clientMPollJob jid)
   where
     jurl = job ^. running_job_url
     jid  = job ^. running_job_id
-    _ :<|> _ :<|> clientMPollJob :<|> _ = client $ jobAPI job
+    _ :<|> _ :<|> clientMPollJob :<|> _ = client $ asyncJobAPI job
 
 -- NOTES:
 -- * retryOnTransientFailure ?

@@ -10,8 +10,8 @@
 {-# LANGUAGE TypeFamilies #-}
 module Servant.Async.Job
   -- Essentials
-  ( JobAPI
-  , JobAPI'
+  ( AsyncJobAPI
+  , AsyncJobAPI'
 
   , JobID
   , mkJobID
@@ -144,7 +144,7 @@ data JobStatus safety e = JobStatus
   }
   deriving Generic
 
-type JobAPI' safetyI safetyO ctI ctO e i o
+type AsyncJobAPI' safetyI safetyO ctI ctO e i o
     =  ReqBody ctI i                          :> Post '[JSON] (JobStatus safetyO e)
   :<|> Capture "id" (JobID safetyI) :> "kill" :> Post '[JSON] (JobStatus safetyO e)
   :<|> Capture "id" (JobID safetyI) :> "poll" :> Get  '[JSON] (JobStatus safetyO e)
@@ -153,16 +153,16 @@ type JobAPI' safetyI safetyO ctI ctO e i o
                                                  -- kill/poll
   :<|> Capture "id" (JobID safetyI) :> "wait" :> Get ctO (JobOutput o)
 
-type JobAPI event input output = JobAPI' 'Unsafe 'Safe '[JSON] '[JSON] event input output
+type AsyncJobAPI event input output = AsyncJobAPI' 'Unsafe 'Safe '[JSON] '[JSON] event input output
 {-
-type JobAPI co o
+type AsyncJobAPI co o
     =  "kill" :> Post '[JSON] (JobStatus 'Safe)
   :<|> "poll" :> Get  '[JSON] (JobStatus 'Safe)
   :<|> "wait" :> Get co o
 
 type JobsAPI ci i co o
     =  ReqBody ci i                 :> Post '[JSON] (JobStatus 'Safe)
-  :<|> Capture "id" (JobID 'Unsafe) :> JobAPI co o
+  :<|> Capture "id" (JobID 'Unsafe) :> AsyncJobAPI co o
 -}
 
 makeLensesWith (lensRules & generateSignatures .~ False) ''JobID
@@ -395,7 +395,7 @@ newtype JobFunction e o = JobFunction
 serveJobAPI :: forall e i o ctI ctO. ToJSON e
             => JobEnv e o
             -> (i -> JobFunction e o)
-            -> Server (JobAPI' 'Unsafe 'Safe ctI ctO e i o)
+            -> Server (AsyncJobAPI' 'Unsafe 'Safe ctI ctO e i o)
 serveJobAPI env f
     =  newJob env . f -- (\x -> threadDelay 5000000 >> f x)
   :<|> wrap killJob
