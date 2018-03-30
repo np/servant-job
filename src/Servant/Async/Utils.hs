@@ -11,6 +11,14 @@ import Data.Swagger
 import Data.Text (Text)
 import qualified Data.Text as T
 import Debug.Trace
+import Web.FormUrlEncoded
+
+(</>) :: String -> String -> String
+"" </> x  = x
+x  </> "" = x
+x  </> y  = x ++ "/" ++ y
+
+type Endom a = a -> a
 
 nil :: Monoid m => m
 nil = mempty
@@ -23,6 +31,11 @@ jsonOptions pref = defaultOptions
   { Data.Aeson.Types.fieldLabelModifier = modifier pref
   , Data.Aeson.Types.unwrapUnaryRecords = True
   , Data.Aeson.Types.omitNothingFields = True }
+
+formOptions :: Text -> FormOptions
+formOptions pref = defaultFormOptions
+  { Web.FormUrlEncoded.fieldLabelModifier = modifier pref
+  }
 
 swaggerOptions :: Text -> SchemaOptions
 swaggerOptions pref = defaultSchemaOptions

@@ -1,7 +1,6 @@
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE FlexibleContexts #-}
-{-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE KindSignatures #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
@@ -12,17 +11,19 @@ module Servant.Async.Job
   -- Essentials
   ( AsyncJobAPI
   , AsyncJobAPI'
+  , AsyncJobsAPI
+  , AsyncJobsAPI'
+  , AsyncJobsServer
 
   , JobID
-  , mkJobID
-  , job_number
-  , job_time
-  , job_token
-
   , JobStatus
   , job_id
   , job_log
   , job_status
+
+  , JobInput(JobInput)
+  , job_input
+  , job_callback
 
   , JobOutput(JobOutput)
   , job_output
@@ -36,94 +37,90 @@ module Servant.Async.Job
 
   , JobEnv
   , newJobEnv
-  , job_env_secret_key
-  , job_env_duration
-  , generateSecretKey
-  , defaultDuration
 
-  , serveJobAPI
+  , serveJobsAPI
 
-  , Safety(..)
-  , SecretKey
+  , JobsStats(..)
+  , serveJobEnvStats
 
   , deleteExpiredJobs
   , deleteExpiredJobsPeriodically
   , deleteExpiredJobsHourly
 
+  -- Re-exports
+  , Safety(..)
+
   -- Internals
   , Job
   , job_async
-  , job_timeout
   , deleteJob
-  , checkJobID
+  , checkID
   , newJob
   , getJob
   , pollJob
   , killJob
   , waitJob
-  , isValidJob
-  , forgetJobID
   )
   where
 
+import Control.Applicative
 import Control.Concurrent (threadDelay)
 import Control.Concurrent.Async (Async, async, waitCatch, poll, cancel)
-import Control.Concurrent.MVar (MVar, newMVar, readMVar, modifyMVar, modifyMVar_)
+import Control.Concurrent.MVar (MVar, newMVar, readMVar, modifyMVar_)
 import Control.Lens
 import Control.Monad
 import Control.Monad.IO.Class
 import Control.Monad.Except
 import Data.Aeson
 import qualified Data.ByteString.Lazy.Char8 as LBS
-import Data.Digest.Pure.SHA (hmacSha256, showDigest)
+import qualified Data.HashMap.Strict as H
 import qualified Data.IntMap.Strict as IntMap
+import Data.Maybe (isNothing)
 import Data.Monoid
-import Data.Swagger
+import Data.Swagger hiding (URL)
 import Data.Text (Text)
 import qualified Data.Text as T
-import qualified Data.Text.Encoding as E
-import Data.Time.Clock (UTCTime, NominalDiffTime, addUTCTime, getCurrentTime)
-import Data.Time.Clock.POSIX (utcTimeToPOSIXSeconds, posixSecondsToUTCTime)
-import GHC.Generics
+import GHC.Generics hiding (to)
 import Prelude hiding (log)
 import Servant
-import System.IO
-import Web.HttpApiData (ToHttpApiData(toUrlPiece), parseUrlPiece)
-
+import Servant.API.Flatten
+import Servant.Async.Core
 import Servant.Async.Utils (jsonOptions, swaggerOptions)
-
-type LBS = LBS.ByteString
-
-newtype SecretKey = SecretKey LBS
-
-data Safety = Safe | Unsafe
-
-data JobID (s :: Safety) = PrivateJobID
-  { _job_number :: Int
-  , _job_time   :: UTCTime
-  , _job_token  :: String
-  }
-  deriving (Eq, Ord)
+import Web.FormUrlEncoded
 
 data Job e a = Job
   { _job_async   :: !(Async a)
   , _job_get_log :: !(IO [e])
-  , _job_timeout :: !UTCTime
   }
 
-data Jobs e a = Jobs
-  { _job_map  :: !(IntMap.IntMap (Job e a))
-  , _job_next :: !Int
-  }
+type instance SymbolOf (Job e o) = "job"
 
-data JobEnv e a = JobEnv
-  { _job_env_secret_key :: !SecretKey
-  , _job_env_jobs_mvar  :: !(MVar (Jobs e a))
-  , _job_env_duration   :: !NominalDiffTime
-  -- ^ This duration specifies for how long one can ask the result of the job.
-  -- Since job identifiers are of type 'Int' the number of jobs should not
-  -- exceed the bounds of integers within this duration.
+type JobEnv e o = Env (Job e o)
+
+data JobInput a = JobInput
+  { _job_input    :: !a
+  , _job_callback :: !(Maybe URL)
   }
+  deriving Generic
+
+makeLenses ''JobInput
+
+instance ToJSON i => ToJSON (JobInput i) where
+  toJSON = genericToJSON $ jsonOptions "_job_"
+
+instance FromJSON i => FromJSON (JobInput i) where
+  parseJSON v =  genericParseJSON (jsonOptions "_job_") v
+             <|> JobInput <$> parseJSON v <*> pure Nothing
+
+instance ToForm i => ToForm (JobInput i) where
+  toForm i =
+    Form . H.insert "callback" (i ^.. job_callback . to toUrlPiece)
+         $ unForm (toForm (i ^. job_input))
+
+instance FromForm i => FromForm (JobInput i) where
+  fromForm f =
+    JobInput <$> fromForm (Form (H.delete "input" (unForm f)))
+             <*> parseMaybe "callback" f
 
 newtype JobOutput a = JobOutput
   { _job_output :: a }
@@ -137,6 +134,8 @@ instance ToJSON o => ToJSON (JobOutput o) where
 instance FromJSON o => FromJSON (JobOutput o) where
   parseJSON = genericParseJSON $ jsonOptions "_job_"
 
+type JobID safety = ID safety "job"
+
 data JobStatus safety e = JobStatus
   { _job_id     :: !(JobID safety)
   , _job_log    :: ![e]
@@ -144,55 +143,32 @@ data JobStatus safety e = JobStatus
   }
   deriving Generic
 
-type AsyncJobAPI' safetyI safetyO ctI ctO e i o
-    =  ReqBody ctI i                          :> Post '[JSON] (JobStatus safetyO e)
-  :<|> Capture "id" (JobID safetyI) :> "kill" :> Post '[JSON] (JobStatus safetyO e)
-  :<|> Capture "id" (JobID safetyI) :> "poll" :> Get  '[JSON] (JobStatus safetyO e)
-                                                 -- TODO: Add a query param to
-                                                 -- drop part of the log in
-                                                 -- kill/poll
-  :<|> Capture "id" (JobID safetyI) :> "wait" :> Get ctO (JobOutput o)
+type AsyncJobAPI' safetyO ctO e o
+    =  "kill" :> Post '[JSON] (JobStatus safetyO e)
+  :<|> "poll" :> Get  '[JSON] (JobStatus safetyO e)
+                 -- TODO: Add a query param to
+                 -- drop part of the log in
+                 -- kill/poll
+  :<|> "wait" :> Get ctO (JobOutput o)
 
-type AsyncJobAPI event input output = AsyncJobAPI' 'Unsafe 'Safe '[JSON] '[JSON] event input output
-{-
-type AsyncJobAPI co o
-    =  "kill" :> Post '[JSON] (JobStatus 'Safe)
-  :<|> "poll" :> Get  '[JSON] (JobStatus 'Safe)
-  :<|> "wait" :> Get co o
+type AsyncJobsAPI' safetyI safetyO ctI ctO e i o
+    =  ReqBody ctI (JobInput i)     :> Post '[JSON] (JobStatus safetyO e)
+  :<|> Capture "id" (JobID safetyI) :> AsyncJobAPI' safetyO ctO e o
 
-type JobsAPI ci i co o
-    =  ReqBody ci i                 :> Post '[JSON] (JobStatus 'Safe)
-  :<|> Capture "id" (JobID 'Unsafe) :> AsyncJobAPI co o
--}
+type AsyncJobAPI event output = AsyncJobAPI' 'Safe '[JSON] event output
 
-makeLensesWith (lensRules & generateSignatures .~ False) ''JobID
-job_number :: Lens' (JobID safety) Int
-job_time   :: Lens' (JobID safety) UTCTime
-job_token  :: Lens' (JobID safety) String
-{-
-job_number :: Lens' (JobID 'Safe) Int
-job_time   :: Lens' (JobID 'Safe) UTCTime
-job_token  :: Lens' (JobID 'Safe) String
--}
+type AsyncJobsAPI event input output = Flat (AsyncJobsAPI' 'Unsafe 'Safe '[JSON] '[JSON] event input output)
+
+type AsyncJobsServer' ctI ctO e i o =
+  Server (Flat (AsyncJobsAPI' 'Unsafe 'Safe ctI ctO e i o))
+
+type AsyncJobsServer e i o = AsyncJobsServer' '[JSON] '[JSON] e i o
 
 makeLenses ''Job
-makeLenses ''JobEnv
-makeLenses ''Jobs
 makeLenses ''JobStatus
-
-emptyJobs :: Jobs e a
-emptyJobs = Jobs mempty 0
 
 instance (safety ~ 'Safe, ToJSON e) => ToJSON (JobStatus safety e) where
   toJSON = genericToJSON $ jsonOptions "_job_"
-
-{-
-instance FromJSON (JobStatus 'Unsafe) where
-  parseJSON = genericParseJSON $ jsonOptions "_job_"
-
-instance FromJSON (JobStatus 'Safe) where
-  parseJSON = genericParseJSON $ jsonOptions "_job_"
--}
 
 instance (safety ~ 'Unsafe, FromJSON e) => FromJSON (JobStatus safety e) where
   parseJSON = genericParseJSON $ jsonOptions "_job_"
@@ -200,121 +176,34 @@ instance (safety ~ 'Unsafe, FromJSON e) => FromJSON (JobStatus safety e) where
 instance ToSchema e => ToSchema (JobStatus safety e) where
   declareNamedSchema = genericDeclareNamedSchema $ swaggerOptions "_job_"
 
-macJobID :: SecretKey -> UTCTime -> Int -> String
-macJobID (SecretKey s) now n =
-  showDigest . hmacSha256 s . LBS.fromStrict . E.encodeUtf8 $
-    T.unwords [toUrlPiece (utcTimeToPOSIXSeconds now), toUrlPiece n]
+newJobEnv :: IO (JobEnv e o)
+newJobEnv = newEnv
 
-forgetJobID :: JobID safety -> JobID safety2
-forgetJobID (PrivateJobID x y z) = PrivateJobID x y z
+deleteJob :: MonadIO m => JobEnv e o -> JobID 'Safe -> m ()
+deleteJob = deleteItem
 
-newJobID :: SecretKey -> UTCTime -> Int -> JobID 'Safe
-newJobID s t n = PrivateJobID n t $ macJobID s t n
-
-mkJobID :: Int -> UTCTime -> String -> JobID 'Unsafe
-mkJobID n t d = PrivateJobID n t d
-
-instance safety ~ 'Unsafe => FromHttpApiData (JobID safety) where
-  parseUrlPiece s =
-    case T.splitOn "-" s of
-      [n, t, d] -> mkJobID <$> parseUrlPiece n
-                           <*> (posixSecondsToUTCTime <$> parseUrlPiece t)
-                           <*> parseUrlPiece d
-      _ -> Left "Invalid job identifier (expecting 3 parts separated by '-')"
-
-instance {-safety ~ 'Safe =>-} ToHttpApiData (JobID safety) where
-  toUrlPiece j =
-    T.intercalate "-" [ toUrlPiece (j ^. job_number)
-                      , toUrlPiece (utcTimeToPOSIXSeconds (j ^. job_time))
-                      , toUrlPiece (j ^. job_token)]
-
-instance safety ~ 'Unsafe => FromJSON (JobID safety) where
-  parseJSON s = either (fail . T.unpack) pure . parseUrlPiece =<< parseJSON s
-
-instance {-safety ~ 'Safe =>-} ToJSON (JobID safety) where
-  toJSON = toJSON . toUrlPiece
-
-{-
-instance ToJSON (JobID 'Safe) where
-  toJSON = toJSON . toUrlPiece
-
-instance ToJSON (JobID 'Unsafe) where
-  toJSON = toJSON . toUrlPiece
--}
-
-instance ToParamSchema (JobID safety) where
-  toParamSchema _ = mempty
-    & type_   .~ SwaggerString
-    & pattern ?~ "[0-9]+-[0-9]+s-[0-9a-f]{64}"
-
-instance ToSchema (JobID safety) where
-  declareNamedSchema p = pure . NamedSchema (Just "JobID") $ mempty
-    & title       ?~ "Job identifier"
-    & paramSchema .~ toParamSchema p
-
--- Default duration is one day
-defaultDuration :: NominalDiffTime
-defaultDuration = 86400 -- it is called nominalDay in time >= 1.8
-
-newJobEnv :: IO (JobEnv e a)
-newJobEnv = do
-  s <- generateSecretKey
-  v <- newMVar emptyJobs
-  pure $ JobEnv s v defaultDuration
-
-generateSecretKey :: IO SecretKey
-generateSecretKey = SecretKey <$> withBinaryFile "/dev/random" ReadMode (\h -> LBS.hGet h 16)
-
-deleteJob :: MonadIO m => JobEnv e a -> JobID 'Safe -> m ()
-deleteJob env jid =
-  liftIO . modifyMVar_ (env ^. job_env_jobs_mvar) $ pure . (job_map . at (jid ^. job_number) .~ Nothing)
-
-isValidJob :: UTCTime -> Job e a -> Bool
-isValidJob now job = now < job ^. job_timeout
-
-deleteExpiredJobs :: JobEnv e a -> IO ()
-deleteExpiredJobs env = do
-  expired <- modifyMVar (env ^. job_env_jobs_mvar) gcJobs
-  mapM_ gcJob (expired ^.. each)
-
+deleteExpiredJobs :: JobEnv e o -> IO ()
+deleteExpiredJobs = deleteExpiredItems gcJob
   where
-    gcJobs jobs = do
-      now <- getCurrentTime
-      let (valid, expired) = IntMap.partition (isValidJob now) (jobs ^. job_map)
-      pure (jobs & job_map .~ valid, expired)
     gcJob job = cancel $ job ^. job_async
 
-deleteExpiredJobsPeriodically :: Int -> JobEnv e a -> IO ()
+deleteExpiredJobsPeriodically :: Int -> JobEnv e o -> IO ()
 deleteExpiredJobsPeriodically delay env = do
   threadDelay delay
   deleteExpiredJobs env
   deleteExpiredJobsPeriodically delay env
 
-deleteExpiredJobsHourly :: JobEnv e a -> IO ()
+deleteExpiredJobsHourly :: JobEnv e o -> IO ()
 deleteExpiredJobsHourly = deleteExpiredJobsPeriodically hourly
   where
     hourly = 1000000 * 60 * 60
 
-checkJobID :: JobEnv e a -> JobID 'Unsafe -> Handler (JobID 'Safe)
-checkJobID env (PrivateJobID n t d) = do
-  now <- liftIO getCurrentTime
-  when (now > addUTCTime (env ^. job_env_duration) t) $
-    throwError $ err410 { errBody = "Expired job" }
-  when (d /= macJobID (env ^. job_env_secret_key) t n) $
-    throwError $ err401 { errBody = "Invalid job identifier authentication code" }
-  pure $ PrivateJobID n t d
-
-newJob :: MonadIO m => JobEnv e a -> JobFunction e a -> m (JobStatus 'Safe e)
-newJob env task = liftIO $ do
+newJob :: MonadIO m => JobEnv e o -> JobFunction e i o
+                    -> JobInput i -> m (JobStatus 'Safe e)
+newJob env task i = liftIO $ do
   log <- newMVar []
-  a <- runJobFunction task (pushLog log)
-  now <- getCurrentTime
-  let job = Job a (readLog log) $ addUTCTime (env ^. job_env_duration) now
-  jid <- modifyMVar (env ^. job_env_jobs_mvar) $ \jobs ->
-    let n = jobs ^. job_next in
-    pure (jobs & job_map . at n ?~ job
-               & job_next +~ 1,
-          newJobID (env ^. job_env_secret_key) now n)
+  let mkJob = runJobFunction task (i ^. job_input) (pushLog log)
+  (jid, _) <- newItem env (Job <$> mkJob <*> pure (readLog log))
   pure $ JobStatus jid [] "running"
 
   where
@@ -324,30 +213,25 @@ newJob env task = liftIO $ do
     readLog :: MVar [e] -> IO [e]
     readLog = readMVar
 
-asyncJobFunction :: IO (Async a) -> JobFunction e a
-asyncJobFunction = JobFunction . const
+asyncJobFunction :: (i -> IO (Async o)) -> JobFunction e i o
+asyncJobFunction = JobFunction . (const .)
 
-ioJobFunction :: IO a -> JobFunction e a
-ioJobFunction = asyncJobFunction . async
+ioJobFunction :: (i -> IO o) -> JobFunction e i o
+ioJobFunction = asyncJobFunction . (async .)
 
-pureJobFunction :: a -> JobFunction e a
-pureJobFunction = ioJobFunction . pure
+pureJobFunction :: (i -> o) -> JobFunction e i o
+pureJobFunction = ioJobFunction . (pure .)
 
-newAsyncJob :: MonadIO m => JobEnv e a -> IO (Async a) -> m (JobStatus 'Safe e)
-newAsyncJob env = newJob env . asyncJobFunction
+newAsyncJob :: MonadIO m => JobEnv e o -> IO (Async o) -> m (JobStatus 'Safe e)
+newAsyncJob env m = newJob env (asyncJobFunction (const m)) (JobInput () Nothing)
 
-newIOJob :: MonadIO m => JobEnv e a -> IO a -> m (JobStatus 'Safe e)
+newIOJob :: MonadIO m => JobEnv e o -> IO o -> m (JobStatus 'Safe e)
 newIOJob env = newAsyncJob env . async
 
-getJob :: JobEnv e a -> JobID 'Safe -> Handler (Job e a)
-getJob env jid = do
-  m <- liftIO . readMVar $ env ^. job_env_jobs_mvar
-  maybe notFound pure $ m ^. job_map . at (jid ^. job_number)
+getJob :: JobEnv e o -> JobID 'Safe -> Handler (Job e o)
+getJob env jid = view env_item <$> getItem env jid
 
-  where
-    notFound = throwError $ err404 { errBody = "No such job" }
-
-pollJob :: MonadIO m => JobEnv e a -> JobID 'Safe -> Job e a -> m (JobStatus 'Safe e)
+pollJob :: MonadIO m => JobEnv e o -> JobID 'Safe -> Job e a -> m (JobStatus 'Safe e)
 pollJob _env jid job = do
   -- It would be tempting to ensure that the log is consistent with the result
   -- of the polling by "locking" the log. Instead for simplicity we read the
@@ -361,14 +245,14 @@ pollJob _env jid job = do
   where
     failed = ("failed " <>) . T.pack . show
 
-killJob :: MonadIO m => JobEnv e a -> JobID 'Safe -> Job e a -> m (JobStatus 'Safe e)
+killJob :: MonadIO m => JobEnv e o -> JobID 'Safe -> Job e a -> m (JobStatus 'Safe e)
 killJob env jid job = do
   liftIO . cancel $ job ^. job_async
   log <- liftIO $ job ^. job_get_log
   deleteJob env jid
   pure $ JobStatus jid log "killed"
 
-waitJob :: Bool -> JobEnv e a -> JobID 'Safe -> Job e a -> Handler (JobOutput a)
+waitJob :: Bool -> JobEnv e o -> JobID 'Safe -> Job e a -> Handler (JobOutput a)
 waitJob alsoDeleteJob env jid job = do
   r <- either err pure =<< liftIO (waitCatch $ job ^. job_async)
   -- NOTE one might prefer not to deleteJob here and ask the client to
@@ -389,15 +273,15 @@ waitJob alsoDeleteJob env jid job = do
   where
     err e = throwError $ err500 { errBody = LBS.pack $ show e }
 
-newtype JobFunction e o = JobFunction
-  { runJobFunction :: (e -> IO ()) -> IO (Async o) }
+newtype JobFunction e i o = JobFunction
+  { runJobFunction :: i -> (e -> IO ()) -> IO (Async o) }
 
-serveJobAPI :: forall e i o ctI ctO. ToJSON e
+serveJobsAPI :: forall e i o ctI ctO. ToJSON e
             => JobEnv e o
-            -> (i -> JobFunction e o)
-            -> Server (AsyncJobAPI' 'Unsafe 'Safe ctI ctO e i o)
-serveJobAPI env f
-    =  newJob env . f -- (\x -> threadDelay 5000000 >> f x)
+            -> JobFunction e i o
+            -> AsyncJobsServer' ctI ctO e i o
+serveJobsAPI env f
+    =  newJob env f
   :<|> wrap killJob
   :<|> wrap pollJob
   :<|> (wrap . waitJob) False
@@ -406,6 +290,25 @@ serveJobAPI env f
     wrap :: forall a. (JobEnv e o -> JobID 'Safe -> Job e o -> Handler a)
                    -> JobID 'Unsafe -> Handler a
     wrap g jid' = do
-      jid <- checkJobID env jid'
+      jid <- checkID env jid'
       job <- getJob env jid
       g env jid job
+
+data JobsStats = JobsStats
+  { job_count  :: !Int
+  , job_active :: !Int
+  }
+  deriving (Generic)
+
+instance ToJSON JobsStats where
+  toJSON = genericToJSON $ jsonOptions "job_"
+
+-- this API should be authorized to admins only
+serveJobEnvStats :: JobEnv e o -> Server (Get '[JSON] JobsStats)
+serveJobEnvStats env = liftIO $ do
+  jobs <- view env_map <$> readMVar (env ^. env_state_mvar)
+  active <- length <$> mapM (fmap isNothing . poll . view (env_item . job_async)) jobs
+  pure $ JobsStats
+    { job_count  = IntMap.size jobs
+    , job_active = active
+    }

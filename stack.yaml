@@ -5,5 +5,6 @@ extra-deps:
 - servant-client-0.13
 - servant-server-0.13
 - servant-swagger-1.1.5
+- servant-flatten-0.1
 - http-types-0.12.1
 - text-1.2.3.0

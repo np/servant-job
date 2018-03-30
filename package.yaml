@@ -27,6 +27,7 @@ dependencies:
 - mtl
 - SHA
 - servant >= 0.13
+- servant-flatten
 - servant-client >= 0.13
 - servant-server >= 0.13
 - servant-swagger >= 1.1.5
@@ -34,13 +35,18 @@ dependencies:
 - swagger2
 - text
 - time
+- unordered-containers
 
 library:
   source-dirs: src
   exposed-modules:
   - Servant.Async.Job
+  - Servant.Async.Core
   - Servant.Async.Utils
   - Servant.Async.Client
+
+  # TODO should be elsewhere
+  - Servant.Scrapy.Schedule
 
 executables:
   servant-async-calc-example:
@@ -53,6 +59,16 @@ executables:
     dependencies:
     - servant-async
     - wai
+    - warp
+  servant-async-scrapy-example:
+    main:                scrapy-orch.hs
+    source-dirs:         example
+    ghc-options:
+    - -threaded
+    - -rtsopts
+    - -with-rtsopts=-N
+    dependencies:
+    - servant-async
     - warp
 
 # executables:
