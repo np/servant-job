@@ -20,10 +20,10 @@ import qualified Data.ByteString.Lazy.Char8 as LBS
 import Servant
 import Servant.API.Flatten
 import Servant.Async.Job
-import Servant.Async.Client hiding (Env)
-import qualified Servant.Async.Client as Client
+import Servant.Async.Server
+import Servant.Async.Client
 import Servant.Async.Utils
-import Servant.Client hiding (manager)
+import Servant.Client hiding (manager, ClientEnv)
 import System.Environment
 import Network.HTTP.Client hiding (Proxy, path, port)
 import Network.Wai.Handler.Warp
@@ -132,7 +132,7 @@ ioPolynomial env sumA prodA pureA log p =
 data Env = Env
   { envBaseURL  :: !BaseUrl
   , jobEnv      :: !(JobEnv Value Int)
-  , envClient   :: !Client.Env
+  , envClient   :: !ClientEnv
   , envTestMVar :: !(MVar [([T.Text], Any)])
   }
 
@@ -190,7 +190,7 @@ serveAsyncCalcAPI env
     wrap :: ((Value -> IO ()) -> i -> IO Int) -> Server (Flat (AsyncJobsAPI Value i Int))
     wrap f = serveJobsAPI (jobEnv env) (JobFunction (\i log -> async (f (wraplog log) i)))
 
-runClientCallbackIO :: (ToJSON e, ToJSON i, ToJSON o) => Client.Env -> URL -> ChanMessage e i o -> IO ()
+runClientCallbackIO :: (ToJSON e, ToJSON i, ToJSON o) => ClientEnv -> URL -> ChanMessage e i o -> IO ()
 runClientCallbackIO env cb_url msg =
   runExceptT (runReaderT (clientCallback cb_url msg) env)
     >>= either (fail . show) pure
@@ -261,8 +261,8 @@ main = do
   testMVar <- newMVar []
   putStrLn $ "Server listening on port: " ++ show port
   app <-
-    serveWithCallbacks (Proxy :: Proxy TopAPI) url
-                       manager (LogEvent logConsole) $ \client_env ->
+    serveApiWithCallbacks (Proxy :: Proxy TopAPI) url
+                          manager (LogEvent logConsole) $ \client_env ->
       let env = Env url job_env client_env testMVar in
       serveAPI env :<|> serveTestAPI env
   run port app

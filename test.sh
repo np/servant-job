@@ -127,6 +127,12 @@ build(){
 calc(){
   stack exec servant-async-calc-example 3000
 }
+scrapy(){
+  stack exec servant-async-scrapy-example 24000 https://dev.gargantext.org:8080
+}
+test_scrapy(){
+  async json scrapy '{ "spider": "pubmed", "query": "cancer colon", "user": "bob", "corpus": 4757 }'
+}
 
 if [[ "${BASH_SOURCE[0]}" = "${0}" ]]; then
   set -e

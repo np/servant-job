@@ -2,26 +2,31 @@
 {-# LANGUAGE DataKinds           #-}
 {-# LANGUAGE KindSignatures      #-}
 {-# LANGUAGE OverloadedStrings   #-}
+{-# LANGUAGE RankNTypes          #-}
 {-# LANGUAGE TemplateHaskell     #-}
 {-# LANGUAGE TypeFamilies        #-}
 {-# LANGUAGE TypeOperators       #-}
 module Servant.Async.Types where
 
 import Control.Applicative
+import Control.Concurrent.Chan
+import Control.Concurrent.MVar (MVar)
 import Control.Lens
 import Control.Exception
 import Data.Aeson
 import qualified Data.HashMap.Strict as H
+import Data.Set (Set)
 import Data.Swagger hiding (url, URL)
 import Data.Text (Text)
 import qualified Data.Text as T
 import GHC.Generics hiding (to)
+import Network.HTTP.Client hiding (Proxy, path)
 import Prelude hiding (log)
 import Servant
 import Servant.API.Flatten
 import Servant.Async.Core as Core
 import Servant.Async.Utils (jsonOptions, swaggerOptions, (</>))
-import Servant.Client hiding (manager)
+import Servant.Client hiding (manager, ClientEnv)
 import Web.FormUrlEncoded
 
 data JobServerAPI = Sync | Async | Stream | Callback
@@ -269,3 +274,54 @@ instance (ToJSON e, ToJSON o) => ToJSON (ChanMessage e i o) where
 
 instance (FromJSON e, FromJSON o) => FromJSON (ChanMessage e i o) where
   parseJSON = genericParseJSON $ jsonOptions "_msg_"
+
+type instance SymbolOf (Chan Value) = "chan"
+
+type ChansEnv = Core.Env (Chan Value)
+
+data Chans = Chans
+  { _chans_env :: !ChansEnv
+  , _chans_url :: !URL
+  }
+
+makeLenses ''Chans
+
+data RunningJob e i o = PrivateRunningJob
+  { _running_job_url :: URL
+  , _running_job_api :: JobServerAPI
+  , _running_job_id  :: JobID 'Unsafe
+  }
+  deriving (Eq, Ord, Generic)
+
+makeLenses ''RunningJob
+
+data Event e i o
+  = NewTask  { _event_server :: JobServerURL e i o }
+  | Started  { _event_server :: JobServerURL e i o
+             , _event_job_id :: Maybe (JobID 'Unsafe) }
+  | Finished { _event_server :: JobServerURL e i o
+             , _event_job_id :: Maybe (JobID 'Unsafe) }
+  | Event    { _event_server :: JobServerURL e i o
+             , _event_job_id :: Maybe (JobID 'Unsafe)
+             , _event_event  :: e }
+  | BadEvent { _event_server :: JobServerURL e i o
+             , _event_job_id :: Maybe (JobID 'Unsafe)
+             , _event_event_value :: Value }
+  | Debug e
+  deriving (Generic)
+
+instance ToJSON e => ToJSON (Event e i o) where
+  toJSON = genericToJSON $ jsonOptions "_event_"
+
+newtype LogEvent = LogEvent
+  { unLogEvent :: forall e i o. ToJSON e => Event e i o -> IO () }
+
+data ClientEnv = ClientEnv
+  { _cenv_manager          :: !Manager
+  , _cenv_polling_delay_ms :: !Int
+  , _cenv_log_event        :: !LogEvent
+  , _cenv_jobs_mvar        :: !(MVar (Set (RunningJob Value Value Value)))
+  , _cenv_chans            :: !Chans
+  }
+
+makeLenses ''ClientEnv

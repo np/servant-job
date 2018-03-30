@@ -40,10 +40,12 @@ dependencies:
 library:
   source-dirs: src
   exposed-modules:
+  - Servant.Async.Types
   - Servant.Async.Job
   - Servant.Async.Core
   - Servant.Async.Utils
   - Servant.Async.Client
+  - Servant.Async.Server
 
   # TODO should be elsewhere
   - Servant.Scrapy.Schedule
@@ -70,6 +72,7 @@ executables:
     dependencies:
     - servant-async
     - warp
+    - http-client-tls
 
 # executables:
 #   servant-async-exe:

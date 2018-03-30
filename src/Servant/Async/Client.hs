@@ -4,24 +4,18 @@ module Servant.Async.Client
   , MonadJob
   , callJob
 
-  , serveWithCallbacks
-
   , JobM
   , runJobM
   , runJobMLog
 
-  , Chans
-  , newChans
-  , serveCallbacks
-
-  , Env
+  , ClientEnv
   , LogEvent(..)
   , forwardInnerEvents
-  , env_manager
-  , env_polling_delay_ms
-  , env_log_event
-  , env_jobs_mvar
-  , env_chans
+  , cenv_manager
+  , cenv_polling_delay_ms
+  , cenv_log_event
+  , cenv_jobs_mvar
+  , cenv_chans
   , newEnv
 
   , URL(..)
@@ -84,7 +78,7 @@ module Servant.Async.Client
   where
 
 import Control.Concurrent.Chan
-import Control.Concurrent.MVar (MVar, newMVar, readMVar, modifyMVar_, takeMVar, putMVar)
+import Control.Concurrent.MVar (newMVar, readMVar, modifyMVar_, takeMVar, putMVar)
 import Control.Concurrent (threadDelay)
 import Control.Lens
 import Control.Monad
@@ -96,16 +90,15 @@ import qualified Data.Aeson.Types as Aeson
 import Data.Set (Set)
 import qualified Data.Set as Set
 import qualified Data.Text as T
-import GHC.Generics hiding (to)
-import Network.HTTP.Client hiding (Proxy, path)
 import Servant
 import Servant.API.Flatten
 import qualified Servant.Async.Core as Core
-import Servant.Async.Core hiding (newEnv, Env)
+import Servant.Async.Core
 import Servant.Async.Job
 import Servant.Async.Utils
 import Servant.Async.Types
-import Servant.Client hiding (manager)
+import Servant.Client hiding (manager, ClientEnv)
+import qualified Servant.Client as S
 
 simpleStreamGenerator :: ((a -> IO ()) -> IO ()) -> StreamGenerator a
 simpleStreamGenerator k = StreamGenerator $ \emit1 emit2 -> do
@@ -140,38 +133,8 @@ data ClientJobError
   -- Show instance is used by `error` which is bad.
   deriving Show
 
-data RunningJob e i o = PrivateRunningJob
-  { _running_job_url :: URL
-  , _running_job_api :: JobServerAPI
-  , _running_job_id  :: JobID 'Unsafe
-  }
-  deriving (Eq, Ord, Generic)
-
-makeLenses ''RunningJob
-
 runningJob :: JobServerURL e i o -> JobID 'Unsafe -> RunningJob e i o
 runningJob jurl jid = PrivateRunningJob (jurl ^. job_server_url) (jurl ^. job_server_api) jid
-
-data Event e i o
-  = NewTask  { _event_server :: JobServerURL e i o }
-  | Started  { _event_server :: JobServerURL e i o
-             , _event_job_id :: Maybe (JobID 'Unsafe) }
-  | Finished { _event_server :: JobServerURL e i o
-             , _event_job_id :: Maybe (JobID 'Unsafe) }
-  | Event    { _event_server :: JobServerURL e i o
-             , _event_job_id :: Maybe (JobID 'Unsafe)
-             , _event_event  :: e }
-  | BadEvent { _event_server :: JobServerURL e i o
-             , _event_job_id :: Maybe (JobID 'Unsafe)
-             , _event_event_value :: Value }
-  | Debug e
-  deriving (Generic)
-
-instance ToJSON e => ToJSON (Event e i o) where
-  toJSON = genericToJSON $ jsonOptions "_event_"
-
-newtype LogEvent = LogEvent
-  { unLogEvent :: forall e i o. ToJSON e => Event e i o -> IO () }
 
 forwardInnerEvents :: FromJSON e => (e -> IO ()) -> LogEvent -> LogEvent
 forwardInnerEvents log_value (LogEvent log_event) = LogEvent $ \event -> do
@@ -186,28 +149,7 @@ forwardInnerEvents log_value (LogEvent log_event) = LogEvent $ \event -> do
           log_event $ BadEvent s i v
     _ -> log_event event
 
-type instance SymbolOf (Chan Value) = "chan"
-
-type ChansEnv = Core.Env (Chan Value)
-
-data Chans = Chans
-  { _chans_env :: !ChansEnv
-  , _chans_url :: !URL
-  }
-
-makeLenses ''Chans
-
-data Env = Env
-  { _env_manager          :: !Manager
-  , _env_polling_delay_ms :: !Int
-  , _env_log_event        :: !LogEvent
-  , _env_jobs_mvar        :: !(MVar (Set (RunningJob Value Value Value)))
-  , _env_chans            :: !Chans
-  }
-
-makeLenses ''Env
-
-type MonadClientJob m = (MonadReader Env m, MonadError ClientJobError m, MonadIO m)
+type MonadClientJob m = (MonadReader ClientEnv m, MonadError ClientJobError m, MonadIO m)
 type M m = MonadClientJob m
 
 -- TODO
@@ -220,15 +162,15 @@ retryOnTransientFailure m = m `catchError` f
     f e | isTransientFailure e = retryOnTransientFailure m
         | otherwise            = throwError e
 
-progress :: (ToJSON e, MonadReader Env m, MonadIO m) => Event e i o -> m ()
+progress :: (ToJSON e, MonadReader ClientEnv m, MonadIO m) => Event e i o -> m ()
 progress event = do
-  log_event <- view env_log_event
+  log_event <- view cenv_log_event
   liftIO $ unLogEvent log_event event
 
 runClientJob :: M m => URL -> (ServantError -> ClientJobError) -> ClientM a -> m a
 runClientJob url err m = do
   env <- ask
-  liftIO (runClientM m (ClientEnv (env ^. env_manager) (url ^. base_url) Nothing))
+  liftIO (runClientM m (S.ClientEnv (env ^. cenv_manager) (url ^. base_url) Nothing))
     >>= either (throwError . err) pure
 
 onRunningJob :: M m => RunningJob e i o
@@ -236,7 +178,7 @@ onRunningJob :: M m => RunningJob e i o
                     -> m ()
 onRunningJob job f = do
   env <- ask
-  liftIO . modifyMVar_ (env ^. env_jobs_mvar) $ pure . f (forgetRunningJob job)
+  liftIO . modifyMVar_ (env ^. cenv_jobs_mvar) $ pure . f (forgetRunningJob job)
 
 forgetRunningJob :: RunningJob e i o -> RunningJob e' i' o'
 forgetRunningJob (PrivateRunningJob u a i) = PrivateRunningJob u a i
@@ -251,7 +193,7 @@ clientStreamJob :: (ToJSON i, ToJSON e, FromJSON e, FromJSON o, M m)
 clientStreamJob jurl input = do
   ResultStream k <- runClientJob (jurl ^. job_server_url) StartingJobError $
                       client (clientStreamAPI jurl) input
-  LogEvent log_event <- view env_log_event
+  LogEvent log_event <- view cenv_log_event
   res <- liftIO . k $ \getResult ->
     let
       onFrame (Left err) = return (Left (FrameError err))
@@ -272,11 +214,11 @@ newEventChan :: (FromJSON e, FromJSON o, M m)
              => m (ChanID 'Safe, IO (Maybe (ChanMessage e i o)))
 newEventChan = do
   env <- ask
-  (i, item) <- liftIO $ Core.newItem (env ^. env_chans . chans_env) newChan
+  (i, item) <- liftIO $ Core.newItem (env ^. cenv_chans . chans_env) newChan
   pure (i, Aeson.parseMaybe parseJSON <$> readChan (item ^. env_item))
 
-chanURL :: Env -> ChanID 'Safe -> URL
-chanURL env i = (env ^. env_chans . chans_url) & base_url %~ extend_url
+chanURL :: ClientEnv -> ChanID 'Safe -> URL
+chanURL env i = (env ^. cenv_chans . chans_url) & base_url %~ extend_url
   where
     extend_url x = x { baseUrlPath = baseUrlPath x ++ "/" ++ T.unpack (toUrlPiece i) }
 
@@ -332,25 +274,6 @@ clientCallback :: (ToJSON e, ToJSON i, ToJSON o, M m)
                => URL -> ChanMessage e i o -> m ()
 clientCallback cb_url = runClientJob cb_url CallbackError . clientMCallback
 
--- See newChans
-serveCallbacks :: ChansEnv -> CallbacksServer
-serveCallbacks env
-    =  wrap mkChanEvent
-  :<|> wrap mkChanError
-  :<|> wrap (mkChanResult . view job_output)
-
-  where
-    wrap :: (msg -> ChanMessage Value Value Value) -> ChanID 'Unsafe -> msg -> Handler ()
-    wrap mk chanID' msg = do
-      chanID <- checkID env chanID'
-      item <- Core.getItem env chanID
-      liftIO $ writeChan (item ^. env_item) (toJSON $ mk msg)
-
-newChans :: URL -> IO (Chans, CallbacksServer)
-newChans url = do
-  env <- Core.newEnv
-  pure (Chans env url, serveCallbacks env)
-
 clientNewJob :: (ToJSON i, FromJSON e, FromJSON o, M m)
              => JobServerURL e i o -> JobInput i -> m (JobStatus 'Unsafe e)
 clientNewJob jurl = runClientJob (jurl ^. job_server_url) StartingJobError . newJobClient
@@ -388,9 +311,9 @@ clientPollJob job = runClientJob jurl PollingJobError (clientMPollJob jid)
 killRunningJobs :: M m => m ()
 killRunningJobs = do
   env <- ask
-  jobs <- liftIO $ readMVar (env ^. env_jobs_mvar)
+  jobs <- liftIO $ readMVar (env ^. cenv_jobs_mvar)
   mapM_ clientKillJob $ Set.toList jobs
-  liftIO $ modifyMVar_ (env ^. env_jobs_mvar) (\new -> pure $ new `Set.difference` jobs)
+  liftIO $ modifyMVar_ (env ^. cenv_jobs_mvar) (\new -> pure $ new `Set.difference` jobs)
 
 isFinishedJob :: JobStatus 'Unsafe e -> Bool
 isFinishedJob status = status ^. job_status == "finished"
@@ -399,7 +322,7 @@ fillLog :: (ToJSON e, FromJSON e, ToJSON i, FromJSON o, M m)
         => JobServerURL e i o -> RunningJob e i o -> Int -> m ()
 fillLog jurl job pos = do
   env <- ask
-  liftIO . threadDelay $ env ^. env_polling_delay_ms
+  liftIO . threadDelay $ env ^. cenv_polling_delay_ms
   status <- retryOnTransientFailure $ clientPollJob job
   let events = drop pos $ status ^. job_log
   forM_ events $ progress . Event jurl (Just $ job ^. running_job_id)
@@ -408,6 +331,9 @@ fillLog jurl job pos = do
 clientAsyncJob :: (FromJSON e, ToJSON e, ToJSON i, FromJSON o, M m)
                => JobServerURL e i o -> i -> m o
 clientAsyncJob jurl i = do
+  -- TODO
+  -- We could take a parameter pass a callback.
+  -- This would avoid the need to poll for the logs.
   status <- retryOnTransientFailure . clientNewJob jurl $ JobInput i Nothing
   let
     jid = status ^. job_id
@@ -438,51 +364,16 @@ callJobM jurl input = do
       pure out
 
 newtype JobM a =
-    JobM { _unMonadJobIO :: ReaderT Env (ExceptT ClientJobError IO) a }
+    JobM { _unMonadJobIO :: ReaderT ClientEnv (ExceptT ClientJobError IO) a }
   deriving ( Functor, Applicative, Monad, MonadIO
-           , MonadReader Env, MonadError ClientJobError)
+           , MonadReader ClientEnv, MonadError ClientJobError)
 
 instance MonadJob JobM where
   callJob = callJobM
 
-newEnv :: Manager -> Chans -> LogEvent -> IO Env
-newEnv manager chans log_event
-  = Env manager oneSecond log_event
-    <$> newMVar Set.empty
-    <*> pure chans
-  where
-    oneSecond = 1000000
-
-runJobM :: MonadIO m => Env -> JobM a -> m (Either ClientJobError a)
+runJobM :: MonadIO m => ClientEnv -> JobM a -> m (Either ClientJobError a)
 runJobM env (JobM m) = liftIO . runExceptT $ runReaderT m env
 
-runJobMLog :: (FromJSON e, MonadIO m) => Env -> (e -> IO ()) -> JobM a -> m (Either ClientJobError a)
+runJobMLog :: (FromJSON e, MonadIO m) => ClientEnv -> (e -> IO ()) -> JobM a -> m (Either ClientJobError a)
 runJobMLog env log_ =
-  runJobM (env & env_log_event %~ forwardInnerEvents log_)
-
-type WithCallbacks api = "chans" :> Flat CallbacksAPI
-                     :<|> api
-
--- A default setup for the typical situation where we have an
--- API together with its server which is a client for some job servers.
--- The `Callback` protocol requires a channel servers which is exposed
--- under the route `chans/`.
---
--- Arguments are:
--- * `BaseUrl`: is the server base URL required to send the callback URLs,
---   to callback job servers.
--- * `Manager`: the HTTP client manager
--- * `LogEvent`: how to process events produced by the clients.
--- * `Env -> Server api`: the API server which can use `runJobM`.
-serveWithCallbacks :: forall api. HasServer api '[]
-                   => Proxy api
-                   -> BaseUrl
-                   -> Manager
-                   -> LogEvent
-                   -> (Env -> Server api)
-                   -> IO Application
-serveWithCallbacks _ url manager log_event s = do
-  (chans, callbacksServer) <- newChans $ mkURL url "chans"
-  client_env <- newEnv manager chans log_event
-  pure $ serve (Proxy :: Proxy (WithCallbacks api))
-               (callbacksServer :<|> s client_env)
+  runJobM (env & cenv_log_event %~ forwardInnerEvents log_)

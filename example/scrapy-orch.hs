@@ -1,31 +1,34 @@
+{-# LANGUAGE DataKinds         #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE FlexibleContexts  #-}
 {-# LANGUAGE DeriveGeneric     #-}
 {-# LANGUAGE RankNTypes        #-}
 {-# LANGUAGE TemplateHaskell   #-}
+{-# LANGUAGE TypeOperators     #-}
 
-import Control.Concurrent.Async (async)
+import Control.Concurrent.Async (Async, async)
 import Control.Lens
 import Data.Aeson
 import qualified Data.ByteString.Lazy.Char8 as LBS
-import Data.Text (Text)
-import GHC.Generics
-import Network.HTTP.Client hiding (Proxy, path, port)
+import Data.Text (Text, pack)
+import GHC.Generics hiding (to)
+import Network.HTTP.Client.TLS
 import Network.Wai.Handler.Warp
 import Servant
 import Servant.Async.Utils (jsonOptions)
-import Servant.Client hiding (manager)
+import Servant.Client hiding (manager, ClientEnv)
 -- import Web.FormUrlEncoded hiding (parseMaybe)
 import Servant.Scrapy.Schedule
 import Servant.Async.Job
 import Servant.Async.Client
+import Servant.Async.Server
 import System.Environment
 
 data ScraperInput = ScraperInput
   { _scin_spider :: !Text
   , _scin_query  :: !Text
   , _scin_user   :: !Text
-  , _scin_corpus :: !Text
+  , _scin_corpus :: !Int
   }
   deriving Generic
 
@@ -88,7 +91,7 @@ callScraper url input =
       , s_extra   =
           [("query",    [input ^. scin_query])
           ,("user",     [input ^. scin_user])
-          ,("corpus",   [input ^. scin_corpus])
+          ,("corpus",   [input ^. scin_corpus . to show . to pack])
        -- ,("report_every", ... Maybe Int
        -- ,("limit", ... Maybe Int
        -- ,("url", ... Text -- file name in local FS
@@ -99,22 +102,26 @@ callScraper url input =
     jurl :: JobServerURL ScraperStatus Schedule ScraperStatus
     jurl = JobServerURL url Callback
 
-type API = AsyncJobsAPI ScraperStatus ScraperInput ScraperStatus
+type API =
+  "async" :> "scrapy" :> AsyncJobsAPI ScraperStatus ScraperInput ScraperStatus
+
+pipeline :: FromJSON e => URL -> ClientEnv -> ScraperInput
+                       -> (e -> IO ()) -> IO (Async ScraperStatus)
+pipeline scrapyurl client_env input log_status = async $ do
+  e <- runJobMLog client_env log_status $ callScraper scrapyurl input
+  either (fail . show) pure e
 
 main :: IO ()
 main = do
-  [scrapyurl'] <- getArgs
+  [port', scrapyurl'] <- getArgs
+  let port = (read port' :: Int)
   scrapyurl <- parseBaseUrl scrapyurl'
-  selfurl <- parseBaseUrl "http://0.0.0.0:7000"
-  manager <- newManager defaultManagerSettings
+  selfurl <- parseBaseUrl $ "http://0.0.0.0:" ++ show port
+  putStrLn $ "Server listening on port: " ++ show port
+          ++ " and scrapyurl: " ++ scrapyurl'
+  manager <- newTlsManager
   job_env <- newJobEnv
   app <-
-    serveWithCallbacks (Proxy :: Proxy API) selfurl manager (LogEvent logConsole) $ \client_env ->
-      let
-        f input log_status = async $ do
-          e <- runJobMLog client_env log_status $ callScraper (URL scrapyurl) input
-          either (fail . show) pure e
-
-      in
-        serveJobsAPI job_env (JobFunction f)
-  run 7000 app
+    serveApiWithCallbacks (Proxy :: Proxy API) selfurl manager (LogEvent logConsole) $
+      serveJobsAPI job_env . JobFunction . pipeline (URL scrapyurl)
+  run port app
