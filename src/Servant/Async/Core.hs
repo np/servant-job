@@ -34,10 +34,6 @@ module Servant.Async.Core
   , Safety(..)
   , SecretKey
 
-  , URL(..)
-  , base_url
-  , mkURL
-
   -- Internals
   , checkID
   , newItem
@@ -50,7 +46,6 @@ module Servant.Async.Core
   where
 
 import Control.Concurrent.MVar (MVar, newMVar, readMVar, modifyMVar, modifyMVar_)
-import Control.Exception (displayException)
 import Control.Lens
 import Control.Monad
 import Control.Monad.IO.Class
@@ -67,8 +62,6 @@ import Data.Time.Clock (UTCTime, NominalDiffTime, addUTCTime, getCurrentTime)
 import Data.Time.Clock.POSIX (utcTimeToPOSIXSeconds, posixSecondsToUTCTime)
 import Prelude hiding (log)
 import Servant
-import Servant.Client (BaseUrl, baseUrlPath, showBaseUrl, parseBaseUrl)
-import Servant.Async.Utils
 import System.IO
 import Web.HttpApiData (ToHttpApiData(toUrlPiece), parseUrlPiece)
 import GHC.TypeLits
@@ -235,29 +228,3 @@ getItem env ident = do
   where
     msg = "Not Found: " ++ symbolVal ident
     notFound = throwError $ err404 { errBody = LBS.pack msg, errReasonPhrase = msg }
-
------------
---- URL ---
------------
-
-newtype URL = URL { _base_url :: BaseUrl } deriving (Eq, Ord)
-
-makeLenses ''URL
-
-instance ToJSON URL where
-  toJSON url = toJSON (showBaseUrl (url ^. base_url))
-
-instance FromJSON URL where
-  parseJSON = withText "URL" $ \t ->
-    either (fail . displayException) (pure . URL) $ parseBaseUrl (T.unpack t)
-
-instance FromHttpApiData URL where
-  parseUrlPiece t =
-    parseBaseUrl (T.unpack t) & _Left  %~ T.pack . displayException
-                              & _Right %~ URL
-
-instance ToHttpApiData URL where
-  toUrlPiece = toUrlPiece . showBaseUrl . _base_url
-
-mkURL :: BaseUrl -> String -> URL
-mkURL url path = URL $ url { baseUrlPath = baseUrlPath url </> path }

@@ -190,7 +190,7 @@ serveAsyncCalcAPI env
     wrap :: ((Value -> IO ()) -> i -> IO Int) -> Server (Flat (AsyncJobsAPI Value i Int))
     wrap f = serveJobsAPI (jobEnv env) (JobFunction (\i log -> async (f (wraplog log) i)))
 
-runClientCallbackIO :: (ToJSON e, ToJSON i, ToJSON o) => Client.Env -> CallbackURL e o -> ChanMessage e i o -> IO ()
+runClientCallbackIO :: (ToJSON e, ToJSON i, ToJSON o) => Client.Env -> URL -> ChanMessage e i o -> IO ()
 runClientCallbackIO env cb_url msg =
   runExceptT (runReaderT (clientCallback cb_url msg) env)
     >>= either (fail . show) pure

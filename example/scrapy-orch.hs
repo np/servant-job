@@ -63,7 +63,7 @@ instance FromJSON ScraperStatus where
 
 callJobScrapy :: (ToJSON e, FromJSON e, FromJSON o, MonadClientJob m)
               => JobServerURL e Schedule o
-              -> (CallbackURL e o -> Schedule)
+              -> (URL -> Schedule)
               -> m o
 callJobScrapy jurl schedule = do
   progress $ NewTask jurl

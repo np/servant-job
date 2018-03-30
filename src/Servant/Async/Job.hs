@@ -73,108 +73,27 @@ import Control.Monad.IO.Class
 import Control.Monad.Except
 import Data.Aeson
 import qualified Data.ByteString.Lazy.Char8 as LBS
-import qualified Data.HashMap.Strict as H
 import qualified Data.IntMap.Strict as IntMap
 import Data.Maybe (isNothing)
 import Data.Monoid
-import Data.Swagger hiding (URL)
-import Data.Text (Text)
 import qualified Data.Text as T
 import GHC.Generics hiding (to)
 import Prelude hiding (log)
 import Servant
-import Servant.API.Flatten
+import Servant.Async.Types
 import Servant.Async.Core
-import Servant.Async.Utils (jsonOptions, swaggerOptions)
-import Web.FormUrlEncoded
+import Servant.Async.Utils (jsonOptions)
 
 data Job e a = Job
   { _job_async   :: !(Async a)
   , _job_get_log :: !(IO [e])
   }
 
+makeLenses ''Job
+
 type instance SymbolOf (Job e o) = "job"
 
 type JobEnv e o = Env (Job e o)
-
-data JobInput a = JobInput
-  { _job_input    :: !a
-  , _job_callback :: !(Maybe URL)
-  }
-  deriving Generic
-
-makeLenses ''JobInput
-
-instance ToJSON i => ToJSON (JobInput i) where
-  toJSON = genericToJSON $ jsonOptions "_job_"
-
-instance FromJSON i => FromJSON (JobInput i) where
-  parseJSON v =  genericParseJSON (jsonOptions "_job_") v
-             <|> JobInput <$> parseJSON v <*> pure Nothing
-
-instance ToForm i => ToForm (JobInput i) where
-  toForm i =
-    Form . H.insert "callback" (i ^.. job_callback . to toUrlPiece)
-         $ unForm (toForm (i ^. job_input))
-
-instance FromForm i => FromForm (JobInput i) where
-  fromForm f =
-    JobInput <$> fromForm (Form (H.delete "input" (unForm f)))
-             <*> parseMaybe "callback" f
-
-newtype JobOutput a = JobOutput
-  { _job_output :: a }
-  deriving Generic
-
-makeLenses ''JobOutput
-
-instance ToJSON o => ToJSON (JobOutput o) where
-  toJSON = genericToJSON $ jsonOptions "_job_"
-
-instance FromJSON o => FromJSON (JobOutput o) where
-  parseJSON = genericParseJSON $ jsonOptions "_job_"
-
-type JobID safety = ID safety "job"
-
-data JobStatus safety e = JobStatus
-  { _job_id     :: !(JobID safety)
-  , _job_log    :: ![e]
-  , _job_status :: !Text
-  }
-  deriving Generic
-
-type AsyncJobAPI' safetyO ctO e o
-    =  "kill" :> Post '[JSON] (JobStatus safetyO e)
-  :<|> "poll" :> Get  '[JSON] (JobStatus safetyO e)
-                 -- TODO: Add a query param to
-                 -- drop part of the log in
-                 -- kill/poll
-  :<|> "wait" :> Get ctO (JobOutput o)
-
-type AsyncJobsAPI' safetyI safetyO ctI ctO e i o
-    =  ReqBody ctI (JobInput i)     :> Post '[JSON] (JobStatus safetyO e)
-  :<|> Capture "id" (JobID safetyI) :> AsyncJobAPI' safetyO ctO e o
-
-type AsyncJobAPI event output = AsyncJobAPI' 'Safe '[JSON] event output
-
-type AsyncJobsAPI event input output = Flat (AsyncJobsAPI' 'Unsafe 'Safe '[JSON] '[JSON] event input output)
-
-type AsyncJobsServer' ctI ctO e i o =
-  Server (Flat (AsyncJobsAPI' 'Unsafe 'Safe ctI ctO e i o))
-
-type AsyncJobsServer e i o = AsyncJobsServer' '[JSON] '[JSON] e i o
-
-makeLenses ''Job
-makeLenses ''JobStatus
-
-instance (safety ~ 'Safe, ToJSON e) => ToJSON (JobStatus safety e) where
-  toJSON = genericToJSON $ jsonOptions "_job_"
-
-instance (safety ~ 'Unsafe, FromJSON e) => FromJSON (JobStatus safety e) where
-  parseJSON = genericParseJSON $ jsonOptions "_job_"
-
-instance ToSchema e => ToSchema (JobStatus safety e) where
-  declareNamedSchema = genericDeclareNamedSchema $ swaggerOptions "_job_"
 
 newJobEnv :: IO (JobEnv e o)
 newJobEnv = newEnv
