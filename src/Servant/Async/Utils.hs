@@ -3,6 +3,7 @@
 {-# OPTIONS -fno-warn-orphans #-}
 module Servant.Async.Utils ( module Servant.Async.Utils, trace ) where
 
+import Control.Concurrent.MVar (newMVar, takeMVar, putMVar)
 import Data.Aeson
 import Data.Aeson.Types
 import Data.Maybe
@@ -12,6 +13,7 @@ import Data.Text (Text)
 import qualified Data.Text as T
 import Debug.Trace
 import Web.FormUrlEncoded
+import Servant
 
 (</>) :: String -> String -> String
 "" </> x  = x
@@ -54,3 +56,11 @@ infixr 4 ?!
 -- Reverse infix form of "fromJust" with a custom error message
 (?!) :: Maybe a -> String -> a
 (?!) ma msg = ma ?| error msg
+
+simpleStreamGenerator :: ((a -> IO ()) -> IO ()) -> StreamGenerator a
+simpleStreamGenerator k = StreamGenerator $ \emit1 emit2 -> do
+  emitM <- newMVar emit1
+  k $ \a -> do
+    emit <- takeMVar emitM
+    emit a
+    putMVar emitM emit2

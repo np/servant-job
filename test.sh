@@ -3,6 +3,7 @@
 # . ./test.sh
 # build && calc
 URL=http://0.0.0.0:3000
+echo "URL: $URL"
 CALLBACK_URL=$URL/test/push
 post(){
   local t="$1"
@@ -74,16 +75,35 @@ successes=0
 failures=0
 check(){
   local my="$(eval "$1")"
+  local ref="$2"
   if [ $# != 2 ]; then
     echo "ERROR: two arguments expected"
   fi
-  if [ "$my" = "$2" ]; then
+  if [ "$my" = "$ref" ]; then
     successes=$((successes + 1))
-    echo "PASS: \`$1\` = $my"
+    echo -n "PASS: \`$1\` = "
+    jq -RsaM . <<<"$my"
   else
     failures=$((failures + 1))
-    echo "FAIL: \`$1\` = $my but $2 was expected"
+    echo "FAIL: \`$1\`"
+    echo "  The test returned:"
+    jq -Rr '"   |" + .' <<<"$my"
+    echo "  But the following was expected:"
+    jq -Rr '"   |" + .' <<<"$ref"
   fi
+}
+test_stream(){
+  check "sync json 'sum?delay=1&stream' '[1,2,3,4,5]'" "$(
+  cat <<EOF
+{"event":0}
+{"event":5}
+{"event":9}
+{"event":12}
+{"event":14}
+{"event":15}
+{"output":15}
+EOF
+)"
 }
 test_sum(){
   for m in sync async stream callback; do
@@ -137,6 +157,7 @@ test_scrapy(){
 if [[ "${BASH_SOURCE[0]}" = "${0}" ]]; then
   set -e
   exec 2>/dev/null
+  test_stream
   test_sum
   test_product
   test_polynomial

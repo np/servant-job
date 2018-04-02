@@ -24,13 +24,6 @@ module Servant.Async.Client
   , JobServerURL(..)
   , ClientOrServer(..)
 
-  , JobFrame(..)
-  , StreamFunctor
-  , StreamJobsAPI'
-  , StreamJobsAPI
-  , clientStreamAPI
-  , simpleStreamGenerator
-
   , CallbackJobsAPI
   , CallbackJobsAPI'
   , CallbackAPI
@@ -51,7 +44,6 @@ module Servant.Async.Client
   -- Internals
   , MonadClientJob
   , clientSyncJob
-  , clientStreamJob
   , clientAsyncJob
   , clientCallbackJob'
   , clientCallbackJob
@@ -78,7 +70,7 @@ module Servant.Async.Client
   where
 
 import Control.Concurrent.Chan
-import Control.Concurrent.MVar (newMVar, readMVar, modifyMVar_, takeMVar, putMVar)
+import Control.Concurrent.MVar (readMVar, modifyMVar_)
 import Control.Concurrent (threadDelay)
 import Control.Lens
 import Control.Monad
@@ -99,18 +91,6 @@ import Servant.Async.Utils
 import Servant.Async.Types
 import Servant.Client hiding (manager, ClientEnv)
 import qualified Servant.Client as S
-
-simpleStreamGenerator :: ((a -> IO ()) -> IO ()) -> StreamGenerator a
-simpleStreamGenerator k = StreamGenerator $ \emit1 emit2 -> do
-  emitM <- newMVar emit1
-  k $ \a -> do
-    emit <- takeMVar emitM
-    emit a
-    putMVar emitM emit2
-
-clientStreamAPI :: proxy e i o
-                -> Proxy (StreamJobsAPI 'Client e i o)
-clientStreamAPI _ = Proxy
 
 asyncJobsAPI :: proxy e i o -> Proxy (Flat (AsyncJobsAPI' 'Unsafe 'Unsafe '[JSON] '[JSON] e i o))
 asyncJobsAPI _ = Proxy
@@ -183,16 +163,12 @@ onRunningJob job f = do
 forgetRunningJob :: RunningJob e i o -> RunningJob e' i' o'
 forgetRunningJob (PrivateRunningJob u a i) = PrivateRunningJob u a i
 
-clientSyncJob :: (ToJSON i, FromJSON e, FromJSON o, M m)
-              => JobServerURL e i o -> i -> m (JobOutput o)
-clientSyncJob jurl =
-  runClientJob (jurl ^. job_server_url) StartingJobError . client (syncJobsAPI jurl)
-
-clientStreamJob :: (ToJSON i, ToJSON e, FromJSON e, FromJSON o, M m)
-                => JobServerURL e i o -> i -> m (JobOutput o)
-clientStreamJob jurl input = do
+clientSyncJob :: (ToJSON i, ToJSON e, FromJSON e, FromJSON o, M m)
+              => Bool -> JobServerURL e i o -> i -> m (JobOutput o)
+clientSyncJob streamMode jurl input = do
+  let clientStream = client (syncJobsAPIClient jurl) streamMode input
   ResultStream k <- runClientJob (jurl ^. job_server_url) StartingJobError $
-                      client (clientStreamAPI jurl) input
+                      clientStream
   LogEvent log_event <- view cenv_log_event
   res <- liftIO . k $ \getResult ->
     let
@@ -290,16 +266,19 @@ clientWaitJob job =
     _ :<|> _ :<|> _ :<|> waitJobClient = client $ asyncJobsAPI job
 
 clientKillJob :: (ToJSON i, FromJSON e, FromJSON o, M m)
-              => RunningJob e i o -> m (JobStatus 'Unsafe e)
-clientKillJob job = runClientJob jurl KillingJobError (killJobClient jid)
+              => RunningJob e i o
+              -> Maybe Limit -> Maybe Offset -> m (JobStatus 'Unsafe e)
+clientKillJob job limit offset =
+    runClientJob jurl KillingJobError (killJobClient jid limit offset)
   where
     jurl = job ^. running_job_url
     jid  = job ^. running_job_id
     _ :<|> killJobClient :<|> _ :<|> _ = client $ asyncJobsAPI job
 
 clientPollJob :: (ToJSON i, FromJSON e, FromJSON o, M m)
-              => RunningJob e i o -> m (JobStatus 'Unsafe e)
-clientPollJob job = runClientJob jurl PollingJobError (clientMPollJob jid)
+              => RunningJob e i o -> Maybe Limit -> Maybe Offset -> m (JobStatus 'Unsafe e)
+clientPollJob job limit offset =
+    runClientJob jurl PollingJobError (clientMPollJob jid limit offset)
   where
     jurl = job ^. running_job_url
     jid  = job ^. running_job_id
@@ -312,21 +291,24 @@ killRunningJobs :: M m => m ()
 killRunningJobs = do
   env <- ask
   jobs <- liftIO $ readMVar (env ^. cenv_jobs_mvar)
-  mapM_ clientKillJob $ Set.toList jobs
-  liftIO $ modifyMVar_ (env ^. cenv_jobs_mvar) (\new -> pure $ new `Set.difference` jobs)
+  forM_ (Set.toList jobs) $ \job ->
+    clientKillJob job (Just (Limit 0)) Nothing
+  liftIO . modifyMVar_ (env ^. cenv_jobs_mvar) $ \new ->
+    pure $ new `Set.difference` jobs
 
 isFinishedJob :: JobStatus 'Unsafe e -> Bool
 isFinishedJob status = status ^. job_status == "finished"
 
 fillLog :: (ToJSON e, FromJSON e, ToJSON i, FromJSON o, M m)
-        => JobServerURL e i o -> RunningJob e i o -> Int -> m ()
+        => JobServerURL e i o -> RunningJob e i o -> Offset -> m ()
 fillLog jurl job pos = do
   env <- ask
   liftIO . threadDelay $ env ^. cenv_polling_delay_ms
-  status <- retryOnTransientFailure $ clientPollJob job
-  let events = drop pos $ status ^. job_log
+  status <- retryOnTransientFailure $ clientPollJob job Nothing (Just pos)
+  let events = status ^. job_log
   forM_ events $ progress . Event jurl (Just $ job ^. running_job_id)
-  unless (isFinishedJob status) $ fillLog jurl job (pos + length events)
+  unless (isFinishedJob status) $
+    fillLog jurl job (Offset $ unOffset pos + length events)
 
 clientAsyncJob :: (FromJSON e, ToJSON e, ToJSON i, FromJSON o, M m)
                => JobServerURL e i o -> i -> m o
@@ -340,10 +322,10 @@ clientAsyncJob jurl i = do
     job = runningJob jurl jid
   progress . Started jurl $ Just jid
   onRunningJob job Set.insert
-  fillLog jurl job 0
+  fillLog jurl job (Offset 0)
   out <- retryOnTransientFailure $ clientWaitJob job
   progress . Finished jurl $ Just jid
-  _ <- clientKillJob job
+  _ <- clientKillJob job (Just (Limit 0)) Nothing
   onRunningJob job Set.delete
   pure out
 
@@ -353,8 +335,7 @@ callJobM jurl input = do
   progress $ NewTask jurl
   case jurl ^. job_server_api of
     Async    -> clientAsyncJob jurl input
-    Sync     -> wrap clientSyncJob
-    Stream   -> wrap clientStreamJob
+    Sync     -> wrap $ clientSyncJob False -- TODO true
     Callback -> wrap clientCallbackJob
 
   where

@@ -10,14 +10,13 @@ import Control.Concurrent.Async (Async, async)
 import Control.Lens
 import Data.Aeson
 import qualified Data.ByteString.Lazy.Char8 as LBS
-import Data.Text (Text, pack)
+import Data.Text (Text)
 import GHC.Generics hiding (to)
 import Network.HTTP.Client.TLS
-import Network.Wai.Handler.Warp
+import Network.Wai.Handler.Warp hiding (defaultSettings)
 import Servant
 import Servant.Async.Utils (jsonOptions)
 import Servant.Client hiding (manager, ClientEnv)
--- import Web.FormUrlEncoded hiding (parseMaybe)
 import Servant.Scrapy.Schedule
 import Servant.Async.Job
 import Servant.Async.Client
@@ -25,10 +24,14 @@ import Servant.Async.Server
 import System.Environment
 
 data ScraperInput = ScraperInput
-  { _scin_spider :: !Text
-  , _scin_query  :: !Text
-  , _scin_user   :: !Text
-  , _scin_corpus :: !Int
+  { _scin_spider       :: !Text
+  , _scin_query        :: !(Maybe Text)
+  , _scin_user         :: !Text
+  , _scin_corpus       :: !Int
+  , _scin_report_every :: !(Maybe Int)
+  , _scin_limit        :: !(Maybe Int)
+  , _scin_local_file   :: !(Maybe Text)
+  , _scin_count_only   :: !(Maybe Bool)
   }
   deriving Generic
 
@@ -89,14 +92,14 @@ callScraper url input =
       , s_jobid   = Nothing
       , s_version = Nothing
       , s_extra   =
-          [("query",    [input ^. scin_query])
-          ,("user",     [input ^. scin_user])
-          ,("corpus",   [input ^. scin_corpus . to show . to pack])
-       -- ,("report_every", ... Maybe Int
-       -- ,("limit", ... Maybe Int
-       -- ,("url", ... Text -- file name in local FS
-       -- ,("count_only", ... Maybe Bool
-          ,("callback", [toUrlPiece cb])]
+          [("query",        input ^.. scin_query . _Just)
+          ,("user",         [input ^. scin_user])
+          ,("corpus",       [input ^. scin_corpus . to toUrlPiece])
+          ,("report_every", input ^.. scin_report_every . _Just . to toUrlPiece)
+          ,("limit",        input ^.. scin_limit . _Just . to toUrlPiece)
+          ,("url",          input ^.. scin_local_file . _Just)
+          ,("count_only",   input ^.. scin_count_only . _Just . to toUrlPiece)
+          ,("callback",     [toUrlPiece cb])]
       }
   where
     jurl :: JobServerURL ScraperStatus Schedule ScraperStatus
@@ -120,8 +123,8 @@ main = do
   putStrLn $ "Server listening on port: " ++ show port
           ++ " and scrapyurl: " ++ scrapyurl'
   manager <- newTlsManager
-  job_env <- newJobEnv
+  job_env <- newJobEnv defaultSettings
   app <-
-    serveApiWithCallbacks (Proxy :: Proxy API) selfurl manager (LogEvent logConsole) $
+    serveApiWithCallbacks (Proxy :: Proxy API) defaultSettings selfurl manager (LogEvent logConsole) $
       serveJobsAPI job_env . JobFunction . pipeline (URL scrapyurl)
   run port app

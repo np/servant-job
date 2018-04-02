@@ -36,7 +36,12 @@ module Servant.Async.Job
   , newIOJob
 
   , JobEnv
+  , defaultDuration
   , newJobEnv
+
+  , EnvSettings
+  , defaultSettings
+  , env_duration
 
   , serveJobsAPI
 
@@ -76,6 +81,7 @@ import qualified Data.ByteString.Lazy.Char8 as LBS
 import qualified Data.IntMap.Strict as IntMap
 import Data.Maybe (isNothing)
 import Data.Monoid
+import Data.Text (Text)
 import qualified Data.Text as T
 import GHC.Generics hiding (to)
 import Prelude hiding (log)
@@ -95,7 +101,7 @@ type instance SymbolOf (Job e o) = "job"
 
 type JobEnv e o = Env (Job e o)
 
-newJobEnv :: IO (JobEnv e o)
+newJobEnv :: EnvSettings -> IO (JobEnv e o)
 newJobEnv = newEnv
 
 deleteJob :: MonadIO m => JobEnv e o -> JobID 'Safe -> m ()
@@ -150,8 +156,14 @@ newIOJob env = newAsyncJob env . async
 getJob :: JobEnv e o -> JobID 'Safe -> Handler (Job e o)
 getJob env jid = view env_item <$> getItem env jid
 
-pollJob :: MonadIO m => JobEnv e o -> JobID 'Safe -> Job e a -> m (JobStatus 'Safe e)
-pollJob _env jid job = do
+jobStatus :: JobID 'Safe -> Maybe Limit -> Maybe Offset -> [e] -> Text -> JobStatus 'Safe e
+jobStatus jid limit offset log =
+  JobStatus jid (maybe id (take . unLimit)  limit $
+                 maybe id (drop . unOffset) offset log)
+
+pollJob :: MonadIO m => JobEnv e o -> JobID 'Safe -> Job e a
+                     -> Maybe Limit -> Maybe Offset -> m (JobStatus 'Safe e)
+pollJob _env jid job limit offset = do
   -- It would be tempting to ensure that the log is consistent with the result
   -- of the polling by "locking" the log. Instead for simplicity we read the
   -- log after polling the job. The edge case being that the log shows more
@@ -159,17 +171,18 @@ pollJob _env jid job = do
   -- returned status is running.
   r <- liftIO . poll $ job ^. job_async
   log <- liftIO $ job ^. job_get_log
-  pure . JobStatus jid log $ maybe "running" (either failed (const "finished")) r
+  pure . jobStatus jid limit offset log $ maybe "running" (either failed (const "finished")) r
 
   where
     failed = ("failed " <>) . T.pack . show
 
-killJob :: MonadIO m => JobEnv e o -> JobID 'Safe -> Job e a -> m (JobStatus 'Safe e)
-killJob env jid job = do
+killJob :: MonadIO m => JobEnv e o -> JobID 'Safe -> Job e a
+                     -> Maybe Limit -> Maybe Offset -> m (JobStatus 'Safe e)
+killJob env jid job limit offset = do
   liftIO . cancel $ job ^. job_async
   log <- liftIO $ job ^. job_get_log
   deleteJob env jid
-  pure $ JobStatus jid log "killed"
+  pure $ jobStatus jid limit offset log "killed"
 
 waitJob :: Bool -> JobEnv e o -> JobID 'Safe -> Job e a -> Handler (JobOutput a)
 waitJob alsoDeleteJob env jid job = do
@@ -201,8 +214,8 @@ serveJobsAPI :: forall e i o ctI ctO. ToJSON e
             -> AsyncJobsServer' ctI ctO e i o
 serveJobsAPI env f
     =  newJob env f
-  :<|> wrap killJob
-  :<|> wrap pollJob
+  :<|> wrap' killJob
+  :<|> wrap' pollJob
   :<|> (wrap . waitJob) False
 
   where
@@ -212,6 +225,13 @@ serveJobsAPI env f
       jid <- checkID env jid'
       job <- getJob env jid
       g env jid job
+
+    wrap' :: forall a. (JobEnv e o -> JobID 'Safe -> Job e o -> Maybe Limit -> Maybe Offset -> Handler a)
+                    -> JobID 'Unsafe -> Maybe Limit -> Maybe Offset -> Handler a
+    wrap' g jid' limit offset = do
+      jid <- checkID env jid'
+      job <- getJob env jid
+      g env jid job limit offset
 
 data JobsStats = JobsStats
   { job_count  :: !Int

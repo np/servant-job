@@ -1,11 +1,12 @@
-{-# LANGUAGE DeriveGeneric       #-}
-{-# LANGUAGE DataKinds           #-}
-{-# LANGUAGE KindSignatures      #-}
-{-# LANGUAGE OverloadedStrings   #-}
-{-# LANGUAGE RankNTypes          #-}
-{-# LANGUAGE TemplateHaskell     #-}
-{-# LANGUAGE TypeFamilies        #-}
-{-# LANGUAGE TypeOperators       #-}
+{-# LANGUAGE DeriveGeneric              #-}
+{-# LANGUAGE DataKinds                  #-}
+{-# LANGUAGE GeneralizedNewtypeDeriving #-}
+{-# LANGUAGE KindSignatures             #-}
+{-# LANGUAGE OverloadedStrings          #-}
+{-# LANGUAGE RankNTypes                 #-}
+{-# LANGUAGE TemplateHaskell            #-}
+{-# LANGUAGE TypeFamilies               #-}
+{-# LANGUAGE TypeOperators              #-}
 module Servant.Async.Types where
 
 import Control.Applicative
@@ -29,7 +30,7 @@ import Servant.Async.Utils (jsonOptions, swaggerOptions, (</>))
 import Servant.Client hiding (manager, ClientEnv)
 import Web.FormUrlEncoded
 
-data JobServerAPI = Sync | Async | Stream | Callback
+data JobServerAPI = Sync | Async | Callback
   deriving (Eq, Ord, Generic)
 
 instance ToJSON JobServerAPI
@@ -37,14 +38,12 @@ instance ToJSON JobServerAPI
 instance FromHttpApiData JobServerAPI where
   parseUrlPiece "sync"     = pure Sync
   parseUrlPiece "async"    = pure Async
-  parseUrlPiece "stream"   = pure Stream
   parseUrlPiece "callback" = pure Callback
   parseUrlPiece _          = Left "Unexpected value of type JobServerAPI. Expecting sync, async, or stream"
 
 instance ToHttpApiData JobServerAPI where
   toUrlPiece Sync     = "sync"
   toUrlPiece Async    = "async"
-  toUrlPiece Stream   = "stream"
   toUrlPiece Callback = "callback"
 
 -----------
@@ -130,12 +129,17 @@ data JobStatus safety e = JobStatus
   }
   deriving Generic
 
+newtype Limit  = Limit  { unLimit  :: Int } deriving (ToHttpApiData, FromHttpApiData)
+newtype Offset = Offset { unOffset :: Int } deriving (ToHttpApiData, FromHttpApiData)
+
+type JobStatusAPI meth safetyO e =
+  QueryParam "limit"  Limit  :>
+  QueryParam "offset" Offset :>
+  meth '[JSON] (JobStatus safetyO e)
+
 type AsyncJobAPI' safetyO ctO e o
-    =  "kill" :> Post '[JSON] (JobStatus safetyO e)
-  :<|> "poll" :> Get  '[JSON] (JobStatus safetyO e)
-                 -- TODO: Add a query param to
-                 -- drop part of the log in
-                 -- kill/poll
+    =  "kill" :> JobStatusAPI Post safetyO e
+  :<|> "poll" :> JobStatusAPI Get  safetyO e
   :<|> "wait" :> Get ctO (JobOutput o)
 
 type AsyncJobsAPI' safetyI safetyO ctI ctO e i o
@@ -162,12 +166,6 @@ instance (safety ~ 'Unsafe, FromJSON e) => FromJSON (JobStatus safety e) where
 instance ToSchema e => ToSchema (JobStatus safety e) where
   declareNamedSchema = genericDeclareNamedSchema $ swaggerOptions "_job_"
 
-type SyncJobsAPI' ctI ctO i o = ReqBody ctI i :> Post ctO (JobOutput o)
-type SyncJobsAPI i o = SyncJobsAPI' '[JSON] '[JSON] i o
-
-syncJobsAPI :: proxy e i o -> Proxy (SyncJobsAPI i o)
-syncJobsAPI _ = Proxy
-
 data JobFrame e o = JobFrame
   { _job_frame_event  :: Maybe e
   , _job_frame_output :: Maybe (JobOutput o)
@@ -187,10 +185,20 @@ type instance StreamFunctor 'Client = ResultStream
 type instance StreamFunctor 'Server = StreamGenerator
 
 type StreamJobsAPI' f ctI ctO e i o =
-  ReqBody ctI i :> StreamPost NewlineFraming ctO (f (JobFrame e o))
+  ReqBody ctI i :>
+      StreamPost NewlineFraming ctO (f (JobFrame e o))
 
 type StreamJobsAPI c e i o =
-  StreamJobsAPI' (StreamFunctor c) '[JSON {-, FormUrlEncoded-}] JSON e i o
+  StreamJobsAPI' (StreamFunctor c) '[JSON, FormUrlEncoded] JSON e i o
+
+type SyncJobsAPI' f ctI ctO e i o =
+  QueryFlag "stream" :> StreamJobsAPI' f ctI ctO e i o
+-- Post '[ctO] (JobOutput o)
+
+type SyncJobsAPI c e i o = SyncJobsAPI' (StreamFunctor c) '[JSON] JSON e i o
+
+syncJobsAPIClient :: proxy e i o -> Proxy (SyncJobsAPI 'Client e i o)
+syncJobsAPIClient _ = Proxy
 
 type ChanID safety = ID safety "chan"
 
@@ -238,9 +246,8 @@ type CallbackJobsAPI e i o =
 type family   JobsAPI' (sas :: JobServerAPI)
                        (cs  :: ClientOrServer)
                        (ctI :: [*]) ctO e i o
-type instance JobsAPI' 'Sync     _  ctI ctO _ i o = SyncJobsAPI' ctI '[ctO] i o
+type instance JobsAPI' 'Sync     cs ctI ctO e i o = SyncJobsAPI' (StreamFunctor cs) ctI ctO e i o
 type instance JobsAPI' 'Async    _  ctI ctO e i o = AsyncJobsAPI' 'Unsafe 'Safe ctI '[ctO] e i o
-type instance JobsAPI' 'Stream   cs ctI ctO e i o = StreamJobsAPI' (StreamFunctor cs) ctI ctO e i o
 type instance JobsAPI' 'Callback _  ctI ctO e i o = CallbackJobsAPI' ctI '[ctO] e i o
 
 type JobsAPI sas cs ctI ctO e i o = Flat (JobsAPI' sas cs ctI ctO e i o)

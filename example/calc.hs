@@ -1,10 +1,12 @@
-{-# LANGUAGE TypeOperators  #-}
-{-# LANGUAGE DataKinds      #-}
-{-# LANGUAGE DeriveGeneric  #-}
-{-# LANGUAGE KindSignatures #-}
-{-# LANGUAGE ScopedTypeVariables #-}
-{-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE TypeOperators                #-}
+{-# LANGUAGE DataKinds                    #-}
+{-# LANGUAGE DeriveGeneric                #-}
+{-# LANGUAGE GeneralizedNewtypeDeriving   #-}
+{-# LANGUAGE KindSignatures               #-}
+{-# LANGUAGE ScopedTypeVariables          #-}
+{-# LANGUAGE OverloadedStrings            #-}
 import Prelude hiding (log)
+import Control.Concurrent (threadDelay)
 import Control.Concurrent.MVar (MVar, newMVar, readMVar, modifyMVar_)
 import Control.Applicative
 import Control.Lens
@@ -20,13 +22,14 @@ import qualified Data.ByteString.Lazy.Char8 as LBS
 import Servant
 import Servant.API.Flatten
 import Servant.Async.Job
+import Servant.Async.Types
 import Servant.Async.Server
 import Servant.Async.Client
 import Servant.Async.Utils
 import Servant.Client hiding (manager, ClientEnv)
 import System.Environment
 import Network.HTTP.Client hiding (Proxy, path, port)
-import Network.Wai.Handler.Warp
+import Network.Wai.Handler.Warp hiding (defaultSettings)
 import GHC.Generics
 import Web.FormUrlEncoded hiding (parseMaybe)
 
@@ -72,21 +75,26 @@ instance FromForm Ints where
 instance ToForm Ints where
   toForm = genericToForm $ formOptions "_ints_"
 
+newtype Delay = Delay { unDelay :: Int } deriving (FromHttpApiData)
+
+type IntOpAPI i sas cs ctI =
+  QueryParam "delay" Delay :>
+  JobsAPI sas cs ctI JSON Value i Int
+
 type PolynomialAPI sas cs ctI =
   QueryParam "sum"     JobServerAPI :>
   QueryParam "product" JobServerAPI :>
   QueryFlag  "pure" :>
-  JobsAPI sas cs ctI JSON Value Polynomial Int
+  IntOpAPI Polynomial sas cs ctI
 
 type CalcAPI sas cs ctI
-    =  "sum"        :> JobsAPI       sas cs ctI JSON Value Ints Int
-  :<|> "product"    :> JobsAPI       sas cs ctI JSON Value Ints Int
+    =  "sum"        :> IntOpAPI Ints sas cs ctI
+  :<|> "product"    :> IntOpAPI Ints sas cs ctI
   :<|> "polynomial" :> PolynomialAPI sas cs ctI
 
 type API' cs ctI
     =  "sync"     :> CalcAPI 'Sync     cs ctI
   :<|> "async"    :> CalcAPI 'Async    cs ctI
-  :<|> "stream"   :> CalcAPI 'Stream   cs ctI
   :<|> "callback" :> CalcAPI 'Callback cs ctI
 
 type API = API' 'Server '[JSON, FormUrlEncoded]
@@ -114,7 +122,9 @@ jobPolynomial sumU productU (P coefs input) = do
   ys <- zipWithM (\x y -> callJob productU [x,y]) coefs xs
   callJob sumU ys
 
-ioPolynomial :: MonadIO m => Env -> Maybe JobServerAPI -> Maybe JobServerAPI -> Bool -> (Value -> IO ()) -> Polynomial -> m Int
+ioPolynomial :: MonadIO m => Env
+             -> Maybe JobServerAPI -> Maybe JobServerAPI
+             -> Bool -> (Value -> IO ()) -> Polynomial -> m Int
 ioPolynomial env sumA prodA pureA log p =
   if pureA then do
     let r = purePolynomial p
@@ -157,27 +167,29 @@ productIntsLog log = productLog log . _ints_x
 logConsole :: ToJSON a => a -> IO ()
 logConsole = LBS.putStrLn . encode
 
-serveSyncCalcAPI :: Env -> Server (CalcAPI 'Sync 'Server '[JSON])
-serveSyncCalcAPI env
-    =  wrap (pure . sum . _ints_x)
-  :<|> wrap (pure . product . _ints_x)
-  :<|> \sumA prodA pureA ->
-          wrap (ioPolynomial env sumA prodA pureA logConsole)
-
-  where
-    wrap f = fmap JobOutput . f
-
-serveStreamCalcAPI :: Env -> Server (CalcAPI 'Stream 'Server '[JSON])
+serveStreamCalcAPI :: Env -> Server (CalcAPI 'Sync 'Server '[JSON])
 serveStreamCalcAPI env
     =  wrap sumIntsLog
   :<|> wrap productIntsLog
   :<|> \sumA prodA pureA -> wrap (ioPolynomial env sumA prodA pureA)
 
   where
-    wrap :: ((Value -> IO ()) -> i -> IO Int) -> Server (StreamJobsAPI 'Server Value i Int)
-    wrap f i = pure . simpleStreamGenerator $ \emit -> do
-      r <- f (\e -> emit $ JobFrame (Just e) Nothing) i
-      emit (JobFrame Nothing (Just (JobOutput r)))
+    wrap :: ((Value -> IO ()) -> i -> IO Int) -> Maybe Delay -> Bool
+         -> Server (StreamJobsAPI 'Server Value i Int)
+    wrap f delayA streamMode i
+      | streamMode = pure . simpleStreamGenerator $ \emit -> do
+          let log e = do
+                waitDelay delayA
+                logConsole e
+                emit (JobFrame (Just e) Nothing)
+          r <- f log i
+          emit (JobFrame Nothing (Just (JobOutput r)))
+      | otherwise  = pure . StreamGenerator $ \emit1 _ -> do
+          let log e = do
+                waitDelay delayA
+                logConsole e
+          r <- f log i
+          emit1 (JobFrame Nothing (Just (JobOutput r)))
 
 serveAsyncCalcAPI :: Env -> Server (CalcAPI 'Async 'Server '[JSON])
 serveAsyncCalcAPI env
@@ -186,14 +198,21 @@ serveAsyncCalcAPI env
   :<|> \sumA prodA pureA -> wrap (ioPolynomial env sumA prodA pureA)
 
   where
-    wraplog log i = logConsole i >> log i
-    wrap :: ((Value -> IO ()) -> i -> IO Int) -> Server (Flat (AsyncJobsAPI Value i Int))
-    wrap f = serveJobsAPI (jobEnv env) (JobFunction (\i log -> async (f (wraplog log) i)))
+    wrap :: ((Value -> IO ()) -> i -> IO Int) -> Maybe Delay
+         -> Server (Flat (AsyncJobsAPI Value i Int))
+    wrap f delayA =
+      let wraplog log i = waitDelay delayA >> logConsole i >> log i in
+      serveJobsAPI (jobEnv env) (JobFunction (\i log -> async (f (wraplog log) i)))
 
 runClientCallbackIO :: (ToJSON e, ToJSON i, ToJSON o) => ClientEnv -> URL -> ChanMessage e i o -> IO ()
 runClientCallbackIO env cb_url msg =
   runExceptT (runReaderT (clientCallback cb_url msg) env)
     >>= either (fail . show) pure
+
+waitDelay :: Maybe Delay -> IO ()
+waitDelay = mapM_ (threadDelay . (* oneSecond) . unDelay)
+  where
+    oneSecond = 1000000
 
 serveCallbackCalcAPI :: Env -> Server (CalcAPI 'Callback 'Server '[JSON])
 serveCallbackCalcAPI env
@@ -202,19 +221,21 @@ serveCallbackCalcAPI env
   :<|> \sumA prodA pureA -> wrap (ioPolynomial env sumA prodA pureA)
 
   where
-    wrap :: forall i. ToJSON i => ((Value -> IO ()) -> i -> IO Int) -> Server (CallbackJobsAPI Value i Int)
-    wrap f cbi = liftIO $ do
+    wrap :: forall i. ToJSON i => ((Value -> IO ()) -> i -> IO Int)
+         -> Maybe Delay -> Server (CallbackJobsAPI Value i Int)
+    wrap f delayA cbi = liftIO $ do
       let
         log_event :: ChanMessage Value i Int -> IO ()
-        log_event = runClientCallbackIO (envClient env) (cbi ^. cbi_callback)
+        log_event e = do
+          waitDelay delayA
+          runClientCallbackIO (envClient env) (cbi ^. cbi_callback) e
       r <- f (log_event . mkChanEvent) (cbi ^. cbi_input)
       log_event (mkChanResult r)
 
 serveAPI :: Env -> Server API
 serveAPI env
-    =  serveSyncCalcAPI env
+    =  serveStreamCalcAPI env
   :<|> serveAsyncCalcAPI env
-  :<|> serveStreamCalcAPI env
   :<|> serveCallbackCalcAPI env
 
 data Any = Any Value
@@ -257,11 +278,11 @@ main = do
   let (Just port) = portOpt args
   url <- parseBaseUrl $ "http://0.0.0.0:" ++ show port
   manager <- newManager defaultManagerSettings
-  job_env <- newJobEnv
+  job_env <- newJobEnv defaultSettings
   testMVar <- newMVar []
   putStrLn $ "Server listening on port: " ++ show port
   app <-
-    serveApiWithCallbacks (Proxy :: Proxy TopAPI) url
+    serveApiWithCallbacks (Proxy :: Proxy TopAPI) defaultSettings url
                           manager (LogEvent logConsole) $ \client_env ->
       let env = Env url job_env client_env testMVar in
       serveAPI env :<|> serveTestAPI env

@@ -1,4 +1,5 @@
 {-# LANGUAGE DataKinds #-}
+{-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE KindSignatures #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
@@ -18,10 +19,13 @@ module Servant.Async.Core
   , Env
   , newEnv
   , env_secret_key
-  , env_duration
   , env_state_mvar
+  , env_settings
   , generateSecretKey
-  , defaultDuration
+
+  , EnvSettings
+  , env_duration
+  , defaultSettings
 
   , EnvState
   , env_map
@@ -42,6 +46,7 @@ module Servant.Async.Core
   , isValidItem
   , forgetID
   , mkID
+  , defaultDuration
   )
   where
 
@@ -90,13 +95,18 @@ data EnvState a = EnvState
   , _env_next :: !Int
   }
 
+data EnvSettings = EnvSettings
+  { _env_duration :: !NominalDiffTime
+  -- ^ This duration specifies for how long one should keep an entry in this
+  -- environment (a job for instance).
+  -- Since internal identifiers are of type 'Int' the number of jobs should not
+  -- exceed the bounds of integers within this duration.
+  }
+
 data Env a = Env
   { _env_secret_key :: !SecretKey
   , _env_state_mvar :: !(MVar (EnvState a))
-  , _env_duration   :: !NominalDiffTime
-  -- ^ This duration specifies for how long one can ask the result of the job.
-  -- Since job identifiers are of type 'Int' the number of jobs should not
-  -- exceed the bounds of integers within this duration.
+  , _env_settings   :: !EnvSettings
   }
 
 makeLensesWith (lensRules & generateSignatures .~ False) ''ID
@@ -115,6 +125,7 @@ id_token  :: Lens' (ID 'Safe k) String
 makeLenses ''Env
 makeLenses ''EnvItem
 makeLenses ''EnvState
+makeLenses ''EnvSettings
 
 type family SymbolOf (a :: *) :: Symbol
 
@@ -170,11 +181,15 @@ instance KnownSymbol k => ToSchema (ID safety k) where
 defaultDuration :: NominalDiffTime
 defaultDuration = 86400 -- it is called nominalDay in time >= 1.8
 
-newEnv :: IO (Env a)
-newEnv = do
-  s <- generateSecretKey
-  v <- newMVar $ EnvState mempty 0
-  pure $ Env s v defaultDuration
+-- The default suggested duration is one day: `newEnv defaultDuration`
+defaultSettings :: EnvSettings
+defaultSettings = EnvSettings { _env_duration = defaultDuration }
+
+newEnv :: EnvSettings -> IO (Env a)
+newEnv settings = do
+  key <- generateSecretKey
+  var <- newMVar $ EnvState mempty 0
+  pure $ Env key var settings
 
 generateSecretKey :: IO SecretKey
 generateSecretKey = SecretKey <$> withBinaryFile "/dev/urandom" ReadMode (\h -> LBS.hGet h 16)
@@ -197,13 +212,13 @@ deleteExpiredItems gcItem env = do
       let (valid, expired) = IntMap.partition (isValidItem now) (items ^. env_map)
       pure (items & env_map .~ valid, expired)
 
-checkID :: (KnownSymbol k, k ~ SymbolOf a)
-        => Env a -> ID 'Unsafe k -> Handler (ID 'Safe k)
+checkID :: (KnownSymbol k, k ~ SymbolOf a, MonadError ServantErr m, MonadIO m)
+        => Env a -> ID 'Unsafe k -> m (ID 'Safe k)
 checkID env i@(PrivateID tn n t d) = do
   now <- liftIO getCurrentTime
   when (tn /= symbolVal i) $
     throwError $ err401 { errBody = "Invalid identifier type name" }
-  when (now > addUTCTime (env ^. env_duration) t) $
+  when (now > addUTCTime (env ^. env_settings . env_duration) t) $
     throwError $ err410 { errBody = "Expired identifier" }
   when (d /= macID tn (env ^. env_secret_key) t n) $
     throwError $ err401 { errBody = "Invalid identifier authentication code" }
@@ -212,7 +227,7 @@ checkID env i@(PrivateID tn n t d) = do
 newItem :: forall a k. (KnownSymbol k, k ~ SymbolOf a) => Env a -> IO a -> IO (ID 'Safe k, EnvItem a)
 newItem env mkItem = do
   now <- getCurrentTime
-  item <- EnvItem (addUTCTime (env ^. env_duration) now) <$> mkItem
+  item <- EnvItem (addUTCTime (env ^. env_settings . env_duration) now) <$> mkItem
   ident <- modifyMVar (env ^. env_state_mvar) $ \items ->
     let n = items ^. env_next in
     pure (items & env_map . at n ?~ item
