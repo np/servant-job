@@ -1,2 +1,2 @@
-# async-job
-Async Job API in Haskell Servant
+# servant-job
+Job API in Haskell Servant

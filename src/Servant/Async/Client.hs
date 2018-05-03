@@ -86,7 +86,6 @@ import Servant
 import Servant.API.Flatten
 import qualified Servant.Async.Core as Core
 import Servant.Async.Core
-import Servant.Async.Job
 import Servant.Async.Utils
 import Servant.Async.Types
 import Servant.Client hiding (manager, ClientEnv)

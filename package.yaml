@@ -1,6 +1,6 @@
-name:                servant-async
+name:                servant-job
 version:             0.1.0.0
-github:              TODO np/servant-async TODO
+github:              np/servant-job
 license:             BSD3
 author:              "Nicolas Pouillard"
 maintainer:          "nicolas.pouillard@gmail.com"
@@ -10,10 +10,10 @@ extra-source-files:
 - README.md
 
 # Metadata used when publishing your package
-# synopsis:            Short description of your package
-# category:            Web
+synopsis:            Job API in Haskell Servant
+category:            Web
 
-description: Please see the README on Github at <https://github.com/np/servant-async#readme>
+description: Please see the README on Github at <https://github.com/np/servant-job#readme>
 
 dependencies:
 - aeson
