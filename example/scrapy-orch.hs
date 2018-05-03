@@ -14,13 +14,54 @@ import GHC.Generics hiding (to)
 import Network.HTTP.Client.TLS
 import Network.Wai.Handler.Warp hiding (defaultSettings)
 import Servant
-import Servant.Async.Utils (jsonOptions)
+import Servant.Job.Utils (jsonOptions)
 import Servant.Client hiding (manager, ClientEnv)
-import Servant.Scrapy.Schedule
-import Servant.Async.Job
-import Servant.Async.Client
-import Servant.Async.Server
+import Servant.Job.Async
+import Servant.Job.Client
+import Servant.Job.Server
 import System.Environment
+
+import qualified Data.HashMap.Strict as H
+import Web.FormUrlEncoded hiding (parseMaybe)
+
+data Schedule = Schedule
+  { s_project :: !Text
+  , s_spider  :: !Text
+  , s_setting :: ![Text]
+  , s_jobid   :: !(Maybe Text)
+  , s_version :: !(Maybe Text)
+  , s_extra   :: ![(Text,[Text])]
+  }
+  deriving (Generic)
+
+data ScheduleResponse = ScheduleResponse
+  { _r_status :: !Text
+  , _r_jobid  :: !Text
+  }
+  deriving (Generic)
+
+instance FromJSON ScheduleResponse where
+  parseJSON = genericParseJSON (jsonOptions "_r_")
+
+instance ToForm Schedule where
+  toForm s =
+    Form . H.fromList $
+      [("project",  [s_project s])
+      ,("spider",   [s_spider  s])
+      ,("setting",  s_setting s)
+      ,("jobid",    s_jobid s ^.. _Just)
+      ,("_version", s_version s ^.. _Just)
+      ] ++ s_extra s
+
+type Scrapy =
+  "schedule.json" :> ReqBody '[FormUrlEncoded] Schedule
+                  :> Post '[JSON] ScheduleResponse
+
+scrapyAPI :: Proxy Scrapy
+scrapyAPI = Proxy
+
+scrapySchedule :: Schedule -> ClientM ScheduleResponse
+scrapySchedule = client scrapyAPI
 
 data ScraperInput = ScraperInput
   { _scin_spider       :: !Text

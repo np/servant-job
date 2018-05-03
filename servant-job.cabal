@@ -2,13 +2,15 @@
 --
 -- see: https://github.com/sol/hpack
 --
--- hash: e0f5e47601a0e8501f7fa706eb705e5fe935e650aa065c2031b2d1f42faab046
+-- hash: ebfba43300985c90dc592e1bcd1f8830fb7a83b170f1fe4241aa58da714fc243
 
 name:           servant-job
 version:        0.1.0.0
+synopsis:       Job API in Haskell Servant
 description:    Please see the README on Github at <https://github.com/np/servant-job#readme>
-homepage:       https://github.com/TODO np/servant-job TODO#readme
-bug-reports:    https://github.com/TODO np/servant-job TODO/issues
+category:       Web
+homepage:       https://github.com/np/servant-job#readme
+bug-reports:    https://github.com/np/servant-job/issues
 author:         Nicolas Pouillard
 maintainer:     nicolas.pouillard@gmail.com
 copyright:      2018 Nicolas Pouillard
@@ -22,7 +24,7 @@ extra-source-files:
 
 source-repository head
   type: git
-  location: https://github.com/TODO np/servant-job TODO
+  location: https://github.com/np/servant-job
 
 library
   hs-source-dirs:
@@ -49,13 +51,12 @@ library
     , time
     , unordered-containers
   exposed-modules:
-      Servant.Async.Types
-      Servant.Async.Job
-      Servant.Async.Core
-      Servant.Async.Utils
-      Servant.Async.Client
-      Servant.Async.Server
-      Servant.Scrapy.Schedule
+      Servant.Job.Types
+      Servant.Job.Async
+      Servant.Job.Core
+      Servant.Job.Utils
+      Servant.Job.Client
+      Servant.Job.Server
   other-modules:
       Paths_servant_job
   default-language: Haskell2010

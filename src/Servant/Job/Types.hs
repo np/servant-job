@@ -7,7 +7,7 @@
 {-# LANGUAGE TemplateHaskell            #-}
 {-# LANGUAGE TypeFamilies               #-}
 {-# LANGUAGE TypeOperators              #-}
-module Servant.Async.Types where
+module Servant.Job.Types where
 
 import Control.Applicative
 import Control.Concurrent.Chan
@@ -25,8 +25,8 @@ import Network.HTTP.Client hiding (Proxy, path)
 import Prelude hiding (log)
 import Servant
 import Servant.API.Flatten
-import Servant.Async.Core as Core
-import Servant.Async.Utils (jsonOptions, swaggerOptions, (</>))
+import Servant.Job.Core as Core
+import Servant.Job.Utils (jsonOptions, swaggerOptions, (</>))
 import Servant.Client hiding (manager, ClientEnv)
 import Web.FormUrlEncoded
 
@@ -125,7 +125,7 @@ type JobID safety = ID safety "job"
 data JobStatus safety e = JobStatus
   { _job_id     :: !(JobID safety)
   , _job_log    :: ![e]
-  , _job_status :: !Text
+  , _job_status :: !Text -- TODO: should be a type Started | Finished ...
   }
   deriving Generic
 

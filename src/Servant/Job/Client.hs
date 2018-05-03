@@ -1,5 +1,18 @@
-{-# LANGUAGE ScopedTypeVariables, GeneralizedNewtypeDeriving, KindSignatures, DataKinds, DeriveGeneric, TemplateHaskell, TypeOperators, FlexibleContexts, OverloadedStrings, RankNTypes, GADTs, GeneralizedNewtypeDeriving, TypeFamilies, StandaloneDeriving, ConstraintKinds #-}
-module Servant.Async.Client
+{-# LANGUAGE ConstraintKinds #-}
+{-# LANGUAGE DataKinds #-}
+{-# LANGUAGE DeriveGeneric #-}
+{-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE GADTs #-}
+{-# LANGUAGE GeneralizedNewtypeDeriving #-}
+{-# LANGUAGE KindSignatures #-}
+{-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE RankNTypes #-}
+{-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE StandaloneDeriving #-}
+{-# LANGUAGE TemplateHaskell #-}
+{-# LANGUAGE TypeFamilies #-}
+{-# LANGUAGE TypeOperators #-}
+module Servant.Job.Client
   ( JobsAPI
   , MonadJob
   , callJob
@@ -84,10 +97,10 @@ import Data.Set (Set)
 import qualified Data.Set as Set
 import Servant
 import Servant.API.Flatten
-import qualified Servant.Async.Core as Core
-import Servant.Async.Core
-import Servant.Async.Utils
-import Servant.Async.Types
+import qualified Servant.Job.Core as Core
+import Servant.Job.Core
+import Servant.Job.Utils
+import Servant.Job.Types
 import Servant.Client hiding (manager, ClientEnv)
 import qualified Servant.Client as S
 
@@ -132,6 +145,9 @@ type MonadClientJob m = (MonadReader ClientEnv m, MonadError ClientJobError m, M
 type M m = MonadClientJob m
 
 -- TODO
+-- We should return True on non-fatal errors which we believe are transient.
+-- Do we want this to be part of the ClientEnv to be configurable or
+-- is the notion of transient failure universal enough?
 isTransientFailure :: ClientJobError -> Bool
 isTransientFailure _ = False
 
@@ -311,8 +327,9 @@ clientAsyncJob :: (FromJSON e, ToJSON e, ToJSON i, FromJSON o, M m)
                => JobServerURL e i o -> i -> m o
 clientAsyncJob jurl i = do
   -- TODO
-  -- We could take a parameter pass a callback.
-  -- This would avoid the need to poll for the logs.
+  -- We could take a callback mode flag.
+  -- With this flag on we would aquire a callback URL and we would
+  -- directly receive the logs without polling.
   status <- retryOnTransientFailure . clientNewJob jurl $ JobInput i Nothing
   let
     jid = status ^. job_id
@@ -332,10 +349,12 @@ callJobM jurl input = do
   progress $ NewTask jurl
   case jurl ^. job_server_api of
     Async    -> clientAsyncJob jurl input
-    Sync     -> wrap $ clientSyncJob False -- TODO true
+    Sync     -> wrap $ clientSyncJob streamMode
     Callback -> wrap clientCallbackJob
 
   where
+    -- TODO we should have a way to control streaming
+    streamMode = False
     wrap f = do
       out <- view job_output <$> retryOnTransientFailure (f jurl input)
       progress $ Finished jurl Nothing

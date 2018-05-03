@@ -40,15 +40,12 @@ dependencies:
 library:
   source-dirs: src
   exposed-modules:
-  - Servant.Async.Types
-  - Servant.Async.Job
-  - Servant.Async.Core
-  - Servant.Async.Utils
-  - Servant.Async.Client
-  - Servant.Async.Server
-
-  # TODO should be elsewhere
-  - Servant.Scrapy.Schedule
+  - Servant.Job.Types
+  - Servant.Job.Async
+  - Servant.Job.Core
+  - Servant.Job.Utils
+  - Servant.Job.Client
+  - Servant.Job.Server
 
 executables:
   servant-job-calc-example:

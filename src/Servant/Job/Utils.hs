@@ -1,7 +1,19 @@
-{-# LANGUAGE DataKinds, TypeOperators, ConstraintKinds, FlexibleContexts,
-             TemplateHaskell, GeneralizedNewtypeDeriving, StandaloneDeriving #-}
+{-# LANGUAGE ConstraintKinds #-}
+{-# LANGUAGE DataKinds #-}
+{-# LANGUAGE DeriveGeneric #-}
+{-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE GADTs #-}
+{-# LANGUAGE GeneralizedNewtypeDeriving #-}
+{-# LANGUAGE KindSignatures #-}
+{-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE RankNTypes #-}
+{-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE StandaloneDeriving #-}
+{-# LANGUAGE TemplateHaskell #-}
+{-# LANGUAGE TypeFamilies #-}
+{-# LANGUAGE TypeOperators #-}
 {-# OPTIONS -fno-warn-orphans #-}
-module Servant.Async.Utils ( module Servant.Async.Utils, trace ) where
+module Servant.Job.Utils ( module Servant.Job.Utils, trace ) where
 
 import Control.Concurrent.MVar (newMVar, takeMVar, putMVar)
 import Data.Aeson

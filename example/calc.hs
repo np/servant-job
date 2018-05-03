@@ -20,11 +20,11 @@ import qualified Data.Text as T
 import qualified Data.ByteString.Lazy.Char8 as LBS
 import Servant
 import Servant.API.Flatten
-import Servant.Async.Job
-import Servant.Async.Types
-import Servant.Async.Server
-import Servant.Async.Client
-import Servant.Async.Utils
+import Servant.Job.Async
+import Servant.Job.Types
+import Servant.Job.Server
+import Servant.Job.Client
+import Servant.Job.Utils
 import Servant.Client hiding (manager, ClientEnv)
 import System.Environment
 import Network.HTTP.Client hiding (Proxy, path, port)

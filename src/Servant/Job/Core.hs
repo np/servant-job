@@ -5,7 +5,7 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE TypeFamilies #-}
-module Servant.Async.Core
+module Servant.Job.Core
   -- Essentials
   ( ID
   , id_type

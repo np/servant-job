@@ -7,7 +7,7 @@
 {-# LANGUAGE TypeOperators #-}
 {-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE TypeFamilies #-}
-module Servant.Async.Job
+module Servant.Job.Async
   -- Essentials
   ( AsyncJobAPI
   , AsyncJobAPI'
@@ -85,10 +85,10 @@ import GHC.Generics hiding (to)
 import Network.HTTP.Client hiding (Proxy, path)
 import Prelude hiding (log)
 import Servant
-import Servant.Async.Client (clientMCallback)
-import Servant.Async.Types
-import Servant.Async.Core
-import Servant.Async.Utils (jsonOptions)
+import Servant.Job.Client (clientMCallback)
+import Servant.Job.Types
+import Servant.Job.Core
+import Servant.Job.Utils (jsonOptions)
 import Servant.Client hiding (manager, ClientEnv)
 import qualified Servant.Client as S
 

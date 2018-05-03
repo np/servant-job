@@ -1,5 +1,18 @@
-{-# LANGUAGE ScopedTypeVariables, GeneralizedNewtypeDeriving, KindSignatures, DataKinds, DeriveGeneric, TemplateHaskell, TypeOperators, FlexibleContexts, OverloadedStrings, RankNTypes, GADTs, GeneralizedNewtypeDeriving, TypeFamilies, StandaloneDeriving, ConstraintKinds #-}
-module Servant.Async.Server
+{-# LANGUAGE ConstraintKinds #-}
+{-# LANGUAGE DataKinds #-}
+{-# LANGUAGE DeriveGeneric #-}
+{-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE GADTs #-}
+{-# LANGUAGE GeneralizedNewtypeDeriving #-}
+{-# LANGUAGE KindSignatures #-}
+{-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE RankNTypes #-}
+{-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE StandaloneDeriving #-}
+{-# LANGUAGE TemplateHaskell #-}
+{-# LANGUAGE TypeFamilies #-}
+{-# LANGUAGE TypeOperators #-}
+module Servant.Job.Server
   (
 
   -- Chans and callbacks
@@ -26,9 +39,9 @@ import qualified Data.Set as Set
 import Network.HTTP.Client hiding (Proxy, path)
 import Servant
 import Servant.API.Flatten
-import qualified Servant.Async.Core as Core
-import Servant.Async.Core
-import Servant.Async.Types
+import qualified Servant.Job.Core as Core
+import Servant.Job.Core
+import Servant.Job.Types
 import Servant.Client hiding (manager, ClientEnv)
 
 -- See newChans
