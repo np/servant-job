@@ -1,0 +1,127 @@
+-- This file has been generated from package.yaml by hpack version 0.20.0.
+--
+-- see: https://github.com/sol/hpack
+--
+-- hash: e0f5e47601a0e8501f7fa706eb705e5fe935e650aa065c2031b2d1f42faab046
+
+name:           servant-job
+version:        0.1.0.0
+description:    Please see the README on Github at <https://github.com/np/servant-job#readme>
+homepage:       https://github.com/TODO np/servant-job TODO#readme
+bug-reports:    https://github.com/TODO np/servant-job TODO/issues
+author:         Nicolas Pouillard
+maintainer:     nicolas.pouillard@gmail.com
+copyright:      2018 Nicolas Pouillard
+license:        BSD3
+license-file:   LICENSE
+build-type:     Simple
+cabal-version:  >= 1.10
+
+extra-source-files:
+    README.md
+
+source-repository head
+  type: git
+  location: https://github.com/TODO np/servant-job TODO
+
+library
+  hs-source-dirs:
+      src
+  build-depends:
+      SHA
+    , aeson
+    , async
+    , base >=4.7 && <5
+    , bytestring
+    , containers
+    , http-api-data
+    , http-client
+    , lens
+    , mtl
+    , servant >=0.13
+    , servant-client >=0.13
+    , servant-flatten
+    , servant-server >=0.13
+    , servant-swagger >=1.1.5
+    , split
+    , swagger2
+    , text
+    , time
+    , unordered-containers
+  exposed-modules:
+      Servant.Async.Types
+      Servant.Async.Job
+      Servant.Async.Core
+      Servant.Async.Utils
+      Servant.Async.Client
+      Servant.Async.Server
+      Servant.Scrapy.Schedule
+  other-modules:
+      Paths_servant_job
+  default-language: Haskell2010
+
+executable servant-job-calc-example
+  main-is: calc.hs
+  hs-source-dirs:
+      example
+  ghc-options: -threaded -rtsopts -with-rtsopts=-N
+  build-depends:
+      SHA
+    , aeson
+    , async
+    , base >=4.7 && <5
+    , bytestring
+    , containers
+    , http-api-data
+    , http-client
+    , lens
+    , mtl
+    , servant >=0.13
+    , servant-client >=0.13
+    , servant-flatten
+    , servant-job
+    , servant-server >=0.13
+    , servant-swagger >=1.1.5
+    , split
+    , swagger2
+    , text
+    , time
+    , unordered-containers
+    , wai
+    , warp
+  other-modules:
+      Paths_servant_job
+  default-language: Haskell2010
+
+executable servant-job-scrapy-example
+  main-is: scrapy-orch.hs
+  hs-source-dirs:
+      example
+  ghc-options: -threaded -rtsopts -with-rtsopts=-N
+  build-depends:
+      SHA
+    , aeson
+    , async
+    , base >=4.7 && <5
+    , bytestring
+    , containers
+    , http-api-data
+    , http-client
+    , http-client-tls
+    , lens
+    , mtl
+    , servant >=0.13
+    , servant-client >=0.13
+    , servant-flatten
+    , servant-job
+    , servant-server >=0.13
+    , servant-swagger >=1.1.5
+    , split
+    , swagger2
+    , text
+    , time
+    , unordered-containers
+    , warp
+  other-modules:
+      Paths_servant_job
+  default-language: Haskell2010

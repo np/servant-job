@@ -10,7 +10,6 @@ import Control.Concurrent (threadDelay)
 import Control.Concurrent.MVar (MVar, newMVar, readMVar, modifyMVar_)
 import Control.Applicative
 import Control.Lens
-import Control.Concurrent.Async (async)
 import Control.Monad
 import Control.Monad.Reader
 import Control.Monad.Except
@@ -183,13 +182,13 @@ serveStreamCalcAPI env
                 logConsole e
                 emit (JobFrame (Just e) Nothing)
           r <- f log i
-          emit (JobFrame Nothing (Just (JobOutput r)))
+          emit (JobFrame Nothing (Just r))
       | otherwise  = pure . StreamGenerator $ \emit1 _ -> do
           let log e = do
                 waitDelay delayA
                 logConsole e
           r <- f log i
-          emit1 (JobFrame Nothing (Just (JobOutput r)))
+          emit1 (JobFrame Nothing (Just r))
 
 serveAsyncCalcAPI :: Env -> Server (CalcAPI 'Async 'Server '[JSON])
 serveAsyncCalcAPI env
@@ -198,11 +197,11 @@ serveAsyncCalcAPI env
   :<|> \sumA prodA pureA -> wrap (ioPolynomial env sumA prodA pureA)
 
   where
-    wrap :: ((Value -> IO ()) -> i -> IO Int) -> Maybe Delay
+    wrap :: ToJSON i => ((Value -> IO ()) -> i -> IO Int) -> Maybe Delay
          -> Server (Flat (AsyncJobsAPI Value i Int))
     wrap f delayA =
       let wraplog log i = waitDelay delayA >> logConsole i >> log i in
-      serveJobsAPI (jobEnv env) (JobFunction (\i log -> async (f (wraplog log) i)))
+      serveJobsAPI (jobEnv env) (JobFunction (\i log -> f (wraplog log) i))
 
 runClientCallbackIO :: (ToJSON e, ToJSON i, ToJSON o) => ClientEnv -> URL -> ChanMessage e i o -> IO ()
 runClientCallbackIO env cb_url msg =
@@ -278,7 +277,7 @@ main = do
   let (Just port) = portOpt args
   url <- parseBaseUrl $ "http://0.0.0.0:" ++ show port
   manager <- newManager defaultManagerSettings
-  job_env <- newJobEnv defaultSettings
+  job_env <- newJobEnv defaultSettings manager
   testMVar <- newMVar []
   putStrLn $ "Server listening on port: " ++ show port
   app <-

@@ -6,7 +6,9 @@ module Servant.Async.Server
     Chans
   , newChans
   , serveCallbacks
+  , apiWithCallbacksServer
   , serveApiWithCallbacks
+  , WithCallbacks
 
   -- Re-exports
   , EnvSettings
@@ -26,7 +28,6 @@ import Servant
 import Servant.API.Flatten
 import qualified Servant.Async.Core as Core
 import Servant.Async.Core
-import Servant.Async.Job
 import Servant.Async.Types
 import Servant.Client hiding (manager, ClientEnv)
 
@@ -35,10 +36,11 @@ serveCallbacks :: ChansEnv -> CallbacksServer
 serveCallbacks env
     =  wrap mkChanEvent
   :<|> wrap mkChanError
-  :<|> wrap (mkChanResult . view job_output)
+  :<|> wrap mkChanResult
 
   where
-    wrap :: (msg -> ChanMessage Value Value Value) -> ChanID 'Unsafe -> msg -> Handler ()
+    wrap :: (msg -> ChanMessage AnyEvent AnyInput AnyOutput)
+         -> ChanID 'Unsafe -> msg -> Handler ()
     wrap mk chanID' msg = do
       chanID <- checkID env chanID'
       item <- Core.getItem env chanID
@@ -60,6 +62,19 @@ newClientEnv manager chans log_event
 type WithCallbacks api = "chans" :> Flat CallbacksAPI
                      :<|> api
 
+apiWithCallbacksServer :: forall api. HasServer api '[]
+                       => Proxy api
+                       -> EnvSettings
+                       -> BaseUrl
+                       -> Manager
+                       -> LogEvent
+                       -> (ClientEnv -> Server api)
+                       -> IO (Server (WithCallbacks api))
+apiWithCallbacksServer _ settings url manager log_event s = do
+  (chans, callbacksServer) <- newChans settings $ mkURL url "chans"
+  client_env <- newClientEnv manager chans log_event
+  pure (callbacksServer :<|> s client_env)
+
 -- A default setup for the typical situation where we have an
 -- API together with its server which is a client for some job servers.
 -- The `Callback` protocol requires a channel servers which is exposed
@@ -80,8 +95,6 @@ serveApiWithCallbacks :: forall api. HasServer api '[]
                       -> LogEvent
                       -> (ClientEnv -> Server api)
                       -> IO Application
-serveApiWithCallbacks _ settings url manager log_event s = do
-  (chans, callbacksServer) <- newChans settings $ mkURL url "chans"
-  client_env <- newClientEnv manager chans log_event
-  pure $ serve (Proxy :: Proxy (WithCallbacks api))
-               (callbacksServer :<|> s client_env)
+serveApiWithCallbacks p settings url manager log_event s = do
+  server <- apiWithCallbacksServer p settings url manager log_event s
+  pure $ serve (Proxy :: Proxy (WithCallbacks api)) server

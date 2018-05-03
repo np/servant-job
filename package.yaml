@@ -51,7 +51,7 @@ library:
   - Servant.Scrapy.Schedule
 
 executables:
-  servant-async-calc-example:
+  servant-job-calc-example:
     main:                calc.hs
     source-dirs:         example
     ghc-options:
@@ -59,10 +59,10 @@ executables:
     - -rtsopts
     - -with-rtsopts=-N
     dependencies:
-    - servant-async
+    - servant-job
     - wai
     - warp
-  servant-async-scrapy-example:
+  servant-job-scrapy-example:
     main:                scrapy-orch.hs
     source-dirs:         example
     ghc-options:
@@ -70,12 +70,12 @@ executables:
     - -rtsopts
     - -with-rtsopts=-N
     dependencies:
-    - servant-async
+    - servant-job
     - warp
     - http-client-tls
 
 # executables:
-#   servant-async-exe:
+#   servant-job-exe:
 #     main:                Main.hs
 #     source-dirs:         app
 #     ghc-options:
@@ -83,10 +83,10 @@ executables:
 #     - -rtsopts
 #     - -with-rtsopts=-N
 #     dependencies:
-#     - servant-async
+#     - servant-job
 
 # tests:
-#   servant-async-test:
+#   servant-job-test:
 #     main:                Spec.hs
 #     source-dirs:         test
 #     ghc-options:
@@ -94,4 +94,4 @@ executables:
 #     - -rtsopts
 #     - -with-rtsopts=-N
 #     dependencies:
-#     - servant-async
+#     - servant-job

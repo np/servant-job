@@ -29,10 +29,8 @@ module Servant.Async.Job
   , job_output
 
   , JobFunction(JobFunction)
-  , asyncJobFunction
   , ioJobFunction
   , pureJobFunction
-  , newAsyncJob
   , newIOJob
 
   , JobEnv
@@ -84,11 +82,15 @@ import Data.Monoid
 import Data.Text (Text)
 import qualified Data.Text as T
 import GHC.Generics hiding (to)
+import Network.HTTP.Client hiding (Proxy, path)
 import Prelude hiding (log)
 import Servant
+import Servant.Async.Client (clientMCallback)
 import Servant.Async.Types
 import Servant.Async.Core
 import Servant.Async.Utils (jsonOptions)
+import Servant.Client hiding (manager, ClientEnv)
+import qualified Servant.Client as S
 
 data Job e a = Job
   { _job_async   :: !(Async a)
@@ -99,16 +101,21 @@ makeLenses ''Job
 
 type instance SymbolOf (Job e o) = "job"
 
-type JobEnv e o = Env (Job e o)
+data JobEnv e o = JobEnv
+  { _jenv_jobs    :: !(Env (Job e o))
+  , _jenv_manager :: !Manager
+  }
 
-newJobEnv :: EnvSettings -> IO (JobEnv e o)
-newJobEnv = newEnv
+makeLenses ''JobEnv
+
+newJobEnv :: EnvSettings -> Manager -> IO (JobEnv e o)
+newJobEnv settings manager = JobEnv <$> newEnv settings <*> pure manager
 
 deleteJob :: MonadIO m => JobEnv e o -> JobID 'Safe -> m ()
-deleteJob = deleteItem
+deleteJob = deleteItem . view jenv_jobs
 
 deleteExpiredJobs :: JobEnv e o -> IO ()
-deleteExpiredJobs = deleteExpiredItems gcJob
+deleteExpiredJobs = deleteExpiredItems gcJob . view jenv_jobs
   where
     gcJob job = cancel $ job ^. job_async
 
@@ -123,47 +130,59 @@ deleteExpiredJobsHourly = deleteExpiredJobsPeriodically hourly
   where
     hourly = 1000000 * 60 * 60
 
-newJob :: MonadIO m => JobEnv e o -> JobFunction e i o
-                    -> JobInput i -> m (JobStatus 'Safe e)
+newtype JobFunction e i o = JobFunction
+  { runJobFunction :: i -> (e -> IO ()) -> IO o }
+
+newJob :: forall e i o m. (MonadIO m, ToJSON e, ToJSON o)
+       => JobEnv e o -> JobFunction e i o
+       -> JobInput i -> m (JobStatus 'Safe e)
 newJob env task i = liftIO $ do
   log <- newMVar []
-  let mkJob = runJobFunction task (i ^. job_input) (pushLog log)
-  (jid, _) <- newItem env (Job <$> mkJob <*> pure (readLog log))
+  let mkJob = async $ do
+        out <- runJobFunction task (i ^. job_input) (pushLog log)
+        postCallback $ mkChanResult out
+        pure out
+
+  (jid, _) <- newItem (env ^. jenv_jobs)
+                      (Job <$> mkJob <*> pure (readLog log))
   pure $ JobStatus jid [] "running"
 
   where
+    postCallback :: ChanMessage e i o -> IO ()
+    postCallback m =
+      forM_ (i ^. job_callback) $ \url ->
+        liftIO (runClientM (clientMCallback m)
+                (S.ClientEnv (env ^. jenv_manager)
+                             (url ^. base_url) Nothing))
     pushLog :: MVar [e] -> e -> IO ()
-    pushLog m x = modifyMVar_ m (pure . (x :))
+    pushLog m e = do
+      postCallback $ mkChanEvent e
+      modifyMVar_ m (pure . (e :))
 
     readLog :: MVar [e] -> IO [e]
     readLog = readMVar
 
-asyncJobFunction :: (i -> IO (Async o)) -> JobFunction e i o
-asyncJobFunction = JobFunction . (const .)
-
 ioJobFunction :: (i -> IO o) -> JobFunction e i o
-ioJobFunction = asyncJobFunction . (async .)
+ioJobFunction = JobFunction . (const .)
 
 pureJobFunction :: (i -> o) -> JobFunction e i o
 pureJobFunction = ioJobFunction . (pure .)
 
-newAsyncJob :: MonadIO m => JobEnv e o -> IO (Async o) -> m (JobStatus 'Safe e)
-newAsyncJob env m = newJob env (asyncJobFunction (const m)) (JobInput () Nothing)
-
-newIOJob :: MonadIO m => JobEnv e o -> IO o -> m (JobStatus 'Safe e)
-newIOJob env = newAsyncJob env . async
+newIOJob :: (MonadIO m, ToJSON e, ToJSON o)
+         => JobEnv e o -> IO o -> m (JobStatus 'Safe e)
+newIOJob env m = newJob env (JobFunction (\_ _ -> m)) (JobInput () Nothing)
 
 getJob :: JobEnv e o -> JobID 'Safe -> Handler (Job e o)
-getJob env jid = view env_item <$> getItem env jid
+getJob env jid = view env_item <$> getItem (env ^. jenv_jobs) jid
 
 jobStatus :: JobID 'Safe -> Maybe Limit -> Maybe Offset -> [e] -> Text -> JobStatus 'Safe e
 jobStatus jid limit offset log =
   JobStatus jid (maybe id (take . unLimit)  limit $
                  maybe id (drop . unOffset) offset log)
 
-pollJob :: MonadIO m => JobEnv e o -> JobID 'Safe -> Job e a
-                     -> Maybe Limit -> Maybe Offset -> m (JobStatus 'Safe e)
-pollJob _env jid job limit offset = do
+pollJob :: MonadIO m => Maybe Limit -> Maybe Offset
+        -> JobEnv e o -> JobID 'Safe -> Job e a -> m (JobStatus 'Safe e)
+pollJob limit offset _env jid job = do
   -- It would be tempting to ensure that the log is consistent with the result
   -- of the polling by "locking" the log. Instead for simplicity we read the
   -- log after polling the job. The edge case being that the log shows more
@@ -176,9 +195,9 @@ pollJob _env jid job limit offset = do
   where
     failed = ("failed " <>) . T.pack . show
 
-killJob :: MonadIO m => JobEnv e o -> JobID 'Safe -> Job e a
-                     -> Maybe Limit -> Maybe Offset -> m (JobStatus 'Safe e)
-killJob env jid job limit offset = do
+killJob :: MonadIO m => Maybe Limit -> Maybe Offset
+        -> JobEnv e o -> JobID 'Safe -> Job e a -> m (JobStatus 'Safe e)
+killJob limit offset env jid job = do
   liftIO . cancel $ job ^. job_async
   log <- liftIO $ job ^. job_get_log
   deleteJob env jid
@@ -205,13 +224,11 @@ waitJob alsoDeleteJob env jid job = do
   where
     err e = throwError $ err500 { errBody = LBS.pack $ show e }
 
-newtype JobFunction e i o = JobFunction
-  { runJobFunction :: i -> (e -> IO ()) -> IO (Async o) }
-
-serveJobsAPI :: forall e i o ctI ctO. ToJSON e
-            => JobEnv e o
-            -> JobFunction e i o
-            -> AsyncJobsServer' ctI ctO e i o
+serveJobsAPI :: forall e i o ctI ctO.
+                (ToJSON e, ToJSON o)
+             => JobEnv e o
+             -> JobFunction e i o
+             -> AsyncJobsServer' ctI ctO e i o
 serveJobsAPI env f
     =  newJob env f
   :<|> wrap' killJob
@@ -222,16 +239,11 @@ serveJobsAPI env f
     wrap :: forall a. (JobEnv e o -> JobID 'Safe -> Job e o -> Handler a)
                    -> JobID 'Unsafe -> Handler a
     wrap g jid' = do
-      jid <- checkID env jid'
+      jid <- checkID (env ^. jenv_jobs) jid'
       job <- getJob env jid
       g env jid job
 
-    wrap' :: forall a. (JobEnv e o -> JobID 'Safe -> Job e o -> Maybe Limit -> Maybe Offset -> Handler a)
-                    -> JobID 'Unsafe -> Maybe Limit -> Maybe Offset -> Handler a
-    wrap' g jid' limit offset = do
-      jid <- checkID env jid'
-      job <- getJob env jid
-      g env jid job limit offset
+    wrap' g jid' limit offset = wrap (g limit offset) jid'
 
 data JobsStats = JobsStats
   { job_count  :: !Int
@@ -245,7 +257,7 @@ instance ToJSON JobsStats where
 -- this API should be authorized to admins only
 serveJobEnvStats :: JobEnv e o -> Server (Get '[JSON] JobsStats)
 serveJobEnvStats env = liftIO $ do
-  jobs <- view env_map <$> readMVar (env ^. env_state_mvar)
+  jobs <- view env_map <$> readMVar (env ^. jenv_jobs . env_state_mvar)
   active <- length <$> mapM (fmap isNothing . poll . view (env_item . job_async)) jobs
   pure $ JobsStats
     { job_count  = IntMap.size jobs

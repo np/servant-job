@@ -6,7 +6,6 @@
 {-# LANGUAGE TemplateHaskell   #-}
 {-# LANGUAGE TypeOperators     #-}
 
-import Control.Concurrent.Async (Async, async)
 import Control.Lens
 import Data.Aeson
 import qualified Data.ByteString.Lazy.Char8 as LBS
@@ -109,8 +108,8 @@ type API =
   "async" :> "scrapy" :> AsyncJobsAPI ScraperStatus ScraperInput ScraperStatus
 
 pipeline :: FromJSON e => URL -> ClientEnv -> ScraperInput
-                       -> (e -> IO ()) -> IO (Async ScraperStatus)
-pipeline scrapyurl client_env input log_status = async $ do
+                       -> (e -> IO ()) -> IO ScraperStatus
+pipeline scrapyurl client_env input log_status = do
   e <- runJobMLog client_env log_status $ callScraper scrapyurl input
   either (fail . show) pure e
 
@@ -123,7 +122,7 @@ main = do
   putStrLn $ "Server listening on port: " ++ show port
           ++ " and scrapyurl: " ++ scrapyurl'
   manager <- newTlsManager
-  job_env <- newJobEnv defaultSettings
+  job_env <- newJobEnv defaultSettings manager
   app <-
     serveApiWithCallbacks (Proxy :: Proxy API) defaultSettings selfurl manager (LogEvent logConsole) $
       serveJobsAPI job_env . JobFunction . pipeline (URL scrapyurl)

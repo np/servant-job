@@ -14,11 +14,16 @@ import qualified Data.Text as T
 import Debug.Trace
 import Web.FormUrlEncoded
 import Servant
+import Servant.Client hiding (manager, ClientEnv)
 
 (</>) :: String -> String -> String
 "" </> x  = x
 x  </> "" = x
 x  </> y  = x ++ "/" ++ y
+
+extendBaseUrl :: ToHttpApiData a => a -> BaseUrl -> BaseUrl
+extendBaseUrl a u =
+  u { baseUrlPath = baseUrlPath u ++ "/" ++ T.unpack (toUrlPiece a) }
 
 type Endom a = a -> a
 
@@ -31,7 +36,7 @@ modifier pref field = T.unpack $ T.stripPrefix pref (T.pack field) ?! "Expecting
 jsonOptions :: Text -> Options
 jsonOptions pref = defaultOptions
   { Data.Aeson.Types.fieldLabelModifier = modifier pref
-  , Data.Aeson.Types.unwrapUnaryRecords = True
+  , Data.Aeson.Types.unwrapUnaryRecords = False
   , Data.Aeson.Types.omitNothingFields = True }
 
 formOptions :: Text -> FormOptions
@@ -42,7 +47,7 @@ formOptions pref = defaultFormOptions
 swaggerOptions :: Text -> SchemaOptions
 swaggerOptions pref = defaultSchemaOptions
   { Data.Swagger.fieldLabelModifier = modifier pref
-  , Data.Swagger.unwrapUnaryRecords = True
+  , Data.Swagger.unwrapUnaryRecords = False
   }
 
 infixr 4 ?|

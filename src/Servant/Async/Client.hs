@@ -51,6 +51,7 @@ module Servant.Async.Client
   , clientPollJob
   , clientKillJob
   , clientWaitJob
+  , clientMCallback
   , fillLog
   , Event(..)
   , progress
@@ -81,7 +82,6 @@ import Data.Aeson
 import qualified Data.Aeson.Types as Aeson
 import Data.Set (Set)
 import qualified Data.Set as Set
-import qualified Data.Text as T
 import Servant
 import Servant.API.Flatten
 import qualified Servant.Async.Core as Core
@@ -100,7 +100,7 @@ class Monad m => MonadJob m where
           => JobServerURL e i o -> i -> m o
 
 data ClientJobError
-  = DecodingChanMessageError
+  = DecodingChanMessageError String
   | MissingOutputError
   | FrameError String
   | ChanMessageError String
@@ -177,7 +177,7 @@ clientSyncJob streamMode jurl input = do
         forM_ me $ log_event . Event jurl Nothing
         case mo of
           Nothing -> loop
-          Just o  -> return (Right o)
+          Just o  -> return (Right (JobOutput o))
       loop = do
         r <- getResult
         case r of
@@ -187,16 +187,14 @@ clientSyncJob streamMode jurl input = do
   either throwError pure res
 
 newEventChan :: (FromJSON e, FromJSON o, M m)
-             => m (ChanID 'Safe, IO (Maybe (ChanMessage e i o)))
+             => m (ChanID 'Safe, IO (Either String (ChanMessage e i o)))
 newEventChan = do
   env <- ask
   (i, item) <- liftIO $ Core.newItem (env ^. cenv_chans . chans_env) newChan
-  pure (i, Aeson.parseMaybe parseJSON <$> readChan (item ^. env_item))
+  pure (i, Aeson.parseEither parseJSON <$> readChan (item ^. env_item))
 
 chanURL :: ClientEnv -> ChanID 'Safe -> URL
-chanURL env i = (env ^. cenv_chans . chans_url) & base_url %~ extend_url
-  where
-    extend_url x = x { baseUrlPath = baseUrlPath x ++ "/" ++ T.unpack (toUrlPiece i) }
+chanURL env i = (env ^. cenv_chans . chans_url) & base_url %~ extendBaseUrl i
 
 callbackJobsAPI :: proxy e i o -> Proxy (CallbackJobsAPI e i o)
 callbackJobsAPI _ = Proxy
@@ -220,23 +218,23 @@ clientCallbackJob' jurl inner = do
     loop readNextEvent = do
       mmsg <- liftIO readNextEvent
       case mmsg of
-        Nothing ->
-          throwError DecodingChanMessageError
-        Just msg -> do
+        Left err ->
+          throwError $ DecodingChanMessageError err
+        Right msg -> do
           forM_ (msg ^. msg_event) $ progress . Event jurl Nothing
           forM_ (msg ^. msg_error) $ throwError . ChanMessageError
             -- TODO: should we have an error event?
             -- progress . ErrorEvent jurl Nothing
           case msg ^. msg_result of
             Nothing -> loop readNextEvent
-            Just o  -> pure o
+            Just o  -> pure $ JobOutput o
 
 clientCallbackJob :: (ToJSON i, ToJSON e, FromJSON e, FromJSON o, M m)
                   => JobServerURL e i o -> i -> m (JobOutput o)
 clientCallbackJob jurl input = do
   clientCallbackJob' jurl (client (callbackJobsAPI jurl) . CallbackInput input)
 
-clientMCallback :: (ToJSON e, ToJSON i, ToJSON o)
+clientMCallback :: (ToJSON e, ToJSON o)
                 => ChanMessage e i o -> ClientM ()
 clientMCallback msg = do
   forM_ (msg ^. msg_event)  cli_event
@@ -246,7 +244,7 @@ clientMCallback msg = do
     (cli_event :<|> cli_error :<|> cli_result) =
         client (Proxy :: Proxy (CallbackAPI e o))
 
-clientCallback :: (ToJSON e, ToJSON i, ToJSON o, M m)
+clientCallback :: (ToJSON e, ToJSON o, M m)
                => URL -> ChanMessage e i o -> m ()
 clientCallback cb_url = runClientJob cb_url CallbackError . clientMCallback
 

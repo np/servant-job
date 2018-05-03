@@ -168,7 +168,7 @@ instance ToSchema e => ToSchema (JobStatus safety e) where
 
 data JobFrame e o = JobFrame
   { _job_frame_event  :: Maybe e
-  , _job_frame_output :: Maybe (JobOutput o)
+  , _job_frame_output :: Maybe o
   }
   deriving (Generic)
 
@@ -205,9 +205,16 @@ type ChanID safety = ID safety "chan"
 type CallbackAPI e o
     =  "event"  :> ReqBody '[JSON] e :> Post '[JSON] ()
   :<|> "error"  :> ReqBody '[JSON] String :> Post '[JSON] ()
-  :<|> "output" :> ReqBody '[JSON] (JobOutput o) :> Post '[JSON] ()
+  :<|> "output" :> ReqBody '[JSON] o :> Post '[JSON] ()
 
-type CallbacksAPI = Capture "id" (ChanID 'Unsafe) :> CallbackAPI Value Value
+newtype AnyEvent  = AnyEvent  Value
+  deriving (FromJSON, ToJSON)
+newtype AnyInput  = AnyInput  Value
+  deriving (FromJSON, ToJSON)
+newtype AnyOutput = AnyOutput Value
+  deriving (FromJSON, ToJSON)
+
+type CallbacksAPI = Capture "id" (ChanID 'Unsafe) :> CallbackAPI AnyEvent AnyOutput
 
 type CallbacksServer = Server (Flat CallbacksAPI)
 
@@ -253,9 +260,9 @@ type instance JobsAPI' 'Callback _  ctI ctO e i o = CallbackJobsAPI' ctI '[ctO] 
 type JobsAPI sas cs ctI ctO e i o = Flat (JobsAPI' sas cs ctI ctO e i o)
 
 data ChanMessage e i o = ChanMessage
-  { _msg_event  :: Maybe e
-  , _msg_result :: Maybe o
-  , _msg_error  :: Maybe String
+  { _msg_event  :: !(Maybe e)
+  , _msg_result :: !(Maybe o)
+  , _msg_error  :: !(Maybe String)
   }
   deriving (Generic)
 
