@@ -172,7 +172,7 @@ instance ToParamSchema (ID safety k) where
 
 instance KnownSymbol k => ToSchema (ID safety k) where
   declareNamedSchema p = pure . NamedSchema (Just "ID") $ mempty
-    & title       ?~ T.pack k <> " idontifier"
+    & title       ?~ T.pack k <> " identifier"
     & paramSchema .~ toParamSchema p
     where
       k = symbolVal (Proxy :: Proxy k)
