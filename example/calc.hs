@@ -166,6 +166,7 @@ productIntsLog log = productLog log . _ints_x
 logConsole :: ToJSON a => a -> IO ()
 logConsole = LBS.putStrLn . encode
 
+{-
 serveStreamCalcAPI :: Env -> Server (CalcAPI 'Sync 'Server '[JSON])
 serveStreamCalcAPI env
     =  wrap sumIntsLog
@@ -189,6 +190,7 @@ serveStreamCalcAPI env
                 logConsole e
           r <- f log i
           emit1 (JobFrame Nothing (Just r))
+-}
 
 serveAsyncCalcAPI :: Env -> Server (CalcAPI 'Async 'Server '[JSON])
 serveAsyncCalcAPI env
@@ -231,11 +233,13 @@ serveCallbackCalcAPI env
       r <- f (log_event . mkChanEvent) (cbi ^. cbi_input)
       log_event (mkChanResult r)
 
+{-
 serveAPI :: Env -> Server API
 serveAPI env
     =  serveStreamCalcAPI env
   :<|> serveAsyncCalcAPI env
   :<|> serveCallbackCalcAPI env
+-}
 
 data Any = Any Value
 
@@ -255,6 +259,7 @@ type TestAPI
   :<|> "pull" :> Get '[JSON] [([T.Text], Any)]
   :<|> "clear" :> PostNoContent '[JSON] ()
 
+{-
 serveTestAPI :: Env -> Server TestAPI
 serveTestAPI env
     =  (\segs val -> liftIO (modifyMVar_ m (pure . ((segs,val):))))
@@ -262,6 +267,7 @@ serveTestAPI env
   :<|> liftIO (modifyMVar_ m (pure . const []))
   where
     m = envTestMVar env
+-}
 
 type TopAPI
     =  API
@@ -273,6 +279,8 @@ portOpt _ = Nothing
 
 main :: IO ()
 main = do
+  pure ()
+  {-
   args <- getArgs
   let (Just port) = portOpt args
   url <- parseBaseUrl $ "http://0.0.0.0:" ++ show port
@@ -286,3 +294,4 @@ main = do
       let env = Env url job_env client_env testMVar in
       serveAPI env :<|> serveTestAPI env
   run port app
+  -}

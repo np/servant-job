@@ -74,6 +74,7 @@ infixr 4 ?!
 (?!) :: Maybe a -> String -> a
 (?!) ma msg = ma ?| error msg
 
+{-
 simpleStreamGenerator :: ((a -> IO ()) -> IO ()) -> StreamGenerator a
 simpleStreamGenerator k = StreamGenerator $ \emit1 emit2 -> do
   emitM <- newMVar emit1
@@ -81,3 +82,4 @@ simpleStreamGenerator k = StreamGenerator $ \emit1 emit2 -> do
     emit <- takeMVar emitM
     emit a
     putMVar emitM emit2
+-}

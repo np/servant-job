@@ -1,8 +1,10 @@
--- This file has been generated from package.yaml by hpack version 0.28.2.
+cabal-version: 1.12
+
+-- This file has been generated from package.yaml by hpack version 0.31.2.
 --
 -- see: https://github.com/sol/hpack
 --
--- hash: b9d718b6a72d6401f7e855f5d48ff76c1acd68a7b619bcd6d5082faaddc5b0b4
+-- hash: 45f387b2feea886dfeabb3c40d72f568430099dab3ba4d3296aa881e7a985414
 
 name:           servant-job
 version:        0.1.0.0
@@ -17,7 +19,6 @@ copyright:      2018 Nicolas Pouillard
 license:        BSD3
 license-file:   LICENSE
 build-type:     Simple
-cabal-version:  >= 1.10
 extra-source-files:
     README.md
 
@@ -39,10 +40,10 @@ library
     , http-client
     , lens
     , mtl
-    , servant >=0.13
-    , servant-client >=0.13
+    , servant >=0.16
+    , servant-client >=0.16
     , servant-flatten
-    , servant-server >=0.13
+    , servant-server >=0.16
     , servant-swagger >=1.1.5
     , split
     , swagger2
@@ -76,11 +77,11 @@ executable servant-job-calc-example
     , http-client
     , lens
     , mtl
-    , servant >=0.13
-    , servant-client >=0.13
+    , servant >=0.16
+    , servant-client >=0.16
     , servant-flatten
     , servant-job
-    , servant-server >=0.13
+    , servant-server >=0.16
     , servant-swagger >=1.1.5
     , split
     , swagger2
@@ -110,11 +111,11 @@ executable servant-job-scrapy-example
     , http-client-tls
     , lens
     , mtl
-    , servant >=0.13
-    , servant-client >=0.13
+    , servant >=0.16
+    , servant-client >=0.16
     , servant-flatten
     , servant-job
-    , servant-server >=0.13
+    , servant-server >=0.16
     , servant-swagger >=1.1.5
     , split
     , swagger2

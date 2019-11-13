@@ -56,7 +56,7 @@ module Servant.Job.Client
 
   -- Internals
   , MonadClientJob
-  , clientSyncJob
+  --, clientSyncJob
   , clientAsyncJob
   , clientCallbackJob'
   , clientCallbackJob
@@ -116,11 +116,11 @@ data ClientJobError
   | MissingOutputError
   | FrameError String
   | ChanMessageError String
-  | StartingJobError ServantError
-  | WaitingJobError  ServantError
-  | KillingJobError  ServantError
-  | PollingJobError  ServantError
-  | CallbackError    ServantError
+  | StartingJobError ClientError
+  | WaitingJobError  ClientError
+  | KillingJobError  ClientError
+  | PollingJobError  ClientError
+  | CallbackError    ClientError
 
   -- Show instance is used by `error` which is bad.
   deriving Show
@@ -162,7 +162,7 @@ progress event = do
   log_event <- view cenv_log_event
   liftIO $ unLogEvent log_event event
 
-runClientJob :: M m => URL -> (ServantError -> ClientJobError) -> ClientM a -> m a
+runClientJob :: M m => URL -> (ClientError -> ClientJobError) -> ClientM a -> m a
 runClientJob url err m = do
   env <- ask
   liftIO (runClientM m (S.ClientEnv (env ^. cenv_manager) (url ^. base_url) Nothing))
@@ -178,6 +178,7 @@ onRunningJob job f = do
 forgetRunningJob :: RunningJob e i o -> RunningJob e' i' o'
 forgetRunningJob (PrivateRunningJob u a i) = PrivateRunningJob u a i
 
+{-
 clientSyncJob :: (ToJSON i, ToJSON e, FromJSON e, FromJSON o, M m)
               => Bool -> JobServerURL e i o -> i -> m (JobOutput o)
 clientSyncJob streamMode jurl input = do
@@ -200,6 +201,7 @@ clientSyncJob streamMode jurl input = do
           Just x  -> onFrame x
     in loop
   either throwError pure res
+-}
 
 newEventChan :: (FromJSON e, FromJSON o, M m)
              => m (ChanID 'Safe, IO (Either String (ChanMessage e i o)))
@@ -349,8 +351,9 @@ callJobM jurl input = do
   progress $ NewTask jurl
   case jurl ^. job_server_api of
     Async    -> clientAsyncJob jurl input
-    Sync     -> wrap $ clientSyncJob streamMode
+    --Sync     -> wrap $ clientSyncJob streamMode
     Callback -> wrap clientCallbackJob
+    _    -> clientAsyncJob jurl input
 
   where
     -- TODO we should have a way to control streaming

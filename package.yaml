@@ -26,10 +26,10 @@ dependencies:
 - lens
 - mtl
 - SHA
-- servant >= 0.13
+- servant >= 0.16
 - servant-flatten
-- servant-client >= 0.13
-- servant-server >= 0.13
+- servant-client >= 0.16
+- servant-server >= 0.16
 - servant-swagger >= 1.1.5
 - split
 - swagger2

@@ -30,6 +30,7 @@ import Servant.Job.Utils (jsonOptions, swaggerOptions, (</>))
 import Servant.Client hiding (manager, ClientEnv)
 import Web.FormUrlEncoded
 
+-- | Flavor: type of server to use
 data JobServerAPI = Sync | Async | Callback
   deriving (Eq, Ord, Generic)
 
@@ -180,9 +181,10 @@ instance (ToJSON e, ToJSON o) => ToJSON (JobFrame e o) where
 
 data ClientOrServer = Client | Server
 
+
 type family StreamFunctor (c :: ClientOrServer) :: * -> *
-type instance StreamFunctor 'Client = ResultStream
-type instance StreamFunctor 'Server = StreamGenerator
+--type instance StreamFunctor 'Client = ResultStream
+--type instance StreamFunctor 'Server = StreamGenerator
 
 type StreamJobsAPI' f ctI ctO e i o =
   ReqBody ctI i :>

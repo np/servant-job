@@ -167,7 +167,7 @@ instance {-safety ~ 'Safe =>-} ToJSON (ID safety k) where
 
 instance ToParamSchema (ID safety k) where
   toParamSchema _ = mempty
-    & type_   .~ SwaggerString
+    & type_   ?~ SwaggerString
     & pattern ?~ "[0-9]+-[0-9]+s-[0-9a-f]{64}"
 
 instance KnownSymbol k => ToSchema (ID safety k) where
@@ -212,7 +212,7 @@ deleteExpiredItems gcItem env = do
       let (valid, expired) = IntMap.partition (isValidItem now) (items ^. env_map)
       pure (items & env_map .~ valid, expired)
 
-checkID :: (KnownSymbol k, k ~ SymbolOf a, MonadError ServantErr m, MonadIO m)
+checkID :: (KnownSymbol k, k ~ SymbolOf a, MonadError ServerError m, MonadIO m)
         => Env a -> ID 'Unsafe k -> m (ID 'Safe k)
 checkID env i@(PrivateID tn n t d) = do
   now <- liftIO getCurrentTime
