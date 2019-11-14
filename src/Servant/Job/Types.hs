@@ -40,7 +40,7 @@ instance FromHttpApiData JobServerAPI where
   parseUrlPiece "sync"     = pure Sync
   parseUrlPiece "async"    = pure Async
   parseUrlPiece "callback" = pure Callback
-  parseUrlPiece _          = Left "Unexpected value of type JobServerAPI. Expecting sync, async, or stream"
+  parseUrlPiece _          = Left "Unexpected value of type JobServerAPI. Expecting sync, async, or callback"
 
 instance ToHttpApiData JobServerAPI where
   toUrlPiece Sync     = "sync"

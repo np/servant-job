@@ -112,18 +112,24 @@ makeSumURL, makePrductURL :: BaseUrl -> Maybe JobServerAPI -> JobServerURL Int [
 makeSumURL    = makeJobServerURL "sum"
 makePrductURL = makeJobServerURL "product"
 
-jobPolynomial :: MonadJob m =>
-                 JobServerURL Int [Int] Int ->
-                 JobServerURL Int [Int] Int ->
-                 Polynomial -> m Int
+jobPolynomial :: MonadJob m
+              => JobServerURL Int [Int] Int
+              -> JobServerURL Int [Int] Int
+              -> Polynomial
+              -> m Int
 jobPolynomial sumU productU (P coefs input) = do
   let xs = iterate (input *) 1
   ys <- zipWithM (\x y -> callJob productU [x,y]) coefs xs
   callJob sumU ys
 
-ioPolynomial :: MonadIO m => Env
-             -> Maybe JobServerAPI -> Maybe JobServerAPI
-             -> Bool -> (Value -> IO ()) -> Polynomial -> m Int
+ioPolynomial :: MonadIO m
+             => Env
+             -> Maybe JobServerAPI
+             -> Maybe JobServerAPI
+             -> Bool
+             -> (Value -> IO ())
+             -> Polynomial
+             -> m Int
 ioPolynomial env sumA prodA pureA log p =
   if pureA then do
     let r = purePolynomial p

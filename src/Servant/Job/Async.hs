@@ -188,9 +188,10 @@ pollJob limit offset _env jid job = do
   -- log after polling the job. The edge case being that the log shows more
   -- items which would tell that the job is actually finished while the
   -- returned status is running.
-  r <- liftIO . poll $ job ^. job_async
+  r   <- liftIO . poll $ job ^. job_async
   log <- liftIO $ job ^. job_get_log
-  pure . jobStatus jid limit offset log $ maybe "running" (either failed (const "finished")) r
+  pure . jobStatus jid limit offset log
+       $ maybe "running" (either failed (const "finished")) r
 
   where
     failed = ("failed " <>) . T.pack . show
