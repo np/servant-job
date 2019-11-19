@@ -1,3 +1,4 @@
+{-# LANGUAGE ConstraintKinds #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE KindSignatures #-}
@@ -13,6 +14,8 @@ module Servant.Job.Core
   , id_time
   , id_token
   , SymbolOf
+
+  , MonadServantJob
 
   , deleteExpiredItems
 
@@ -108,6 +111,8 @@ data Env a = Env
   , _env_state_mvar :: !(MVar (EnvState a))
   , _env_settings   :: !EnvSettings
   }
+
+type MonadServantJob m = (MonadIO m, MonadError ServerError m)
 
 makeLensesWith (lensRules & generateSignatures .~ False) ''ID
 -- TODO Lens' -> Getter ?
@@ -212,7 +217,7 @@ deleteExpiredItems gcItem env = do
       let (valid, expired) = IntMap.partition (isValidItem now) (items ^. env_map)
       pure (items & env_map .~ valid, expired)
 
-checkID :: (KnownSymbol k, k ~ SymbolOf a, MonadError ServerError m, MonadIO m)
+checkID :: (KnownSymbol k, k ~ SymbolOf a, MonadServantJob m)
         => Env a -> ID 'Unsafe k -> m (ID 'Safe k)
 checkID env i@(PrivateID tn n t d) = do
   now <- liftIO getCurrentTime
@@ -235,7 +240,8 @@ newItem env mkItem = do
           newID (Proxy :: Proxy k) (env ^. env_secret_key) now n)
   pure (ident, item)
 
-getItem :: (KnownSymbol k, k ~ SymbolOf a) => Env a -> ID 'Safe k -> Handler (EnvItem a)
+getItem :: (MonadServantJob m, KnownSymbol k, k ~ SymbolOf a)
+        => Env a -> ID 'Safe k -> m (EnvItem a)
 getItem env ident = do
   m <- liftIO . readMVar $ env ^. env_state_mvar
   maybe notFound pure $ m ^. env_map . at (ident ^. id_number)

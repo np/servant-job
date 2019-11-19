@@ -4,7 +4,7 @@ cabal-version: 1.12
 --
 -- see: https://github.com/sol/hpack
 --
--- hash: 45f387b2feea886dfeabb3c40d72f568430099dab3ba4d3296aa881e7a985414
+-- hash: 0f0f591f62d5951eaa87c61924874cb94e1e3b0de2d3ae8e84e69e86232a44cc
 
 name:           servant-job
 version:        0.1.0.0

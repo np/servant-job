@@ -19,6 +19,7 @@ import Data.Foldable
 import qualified Data.Text as T
 import qualified Data.ByteString.Lazy.Char8 as LBS
 import Servant
+import Servant.Types.SourceT
 import Servant.API.Flatten
 import Servant.Job.Async
 import Servant.Job.Types
@@ -76,27 +77,27 @@ instance ToForm Ints where
 
 newtype Delay = Delay { unDelay :: Int } deriving (FromHttpApiData)
 
-type IntOpAPI i sas cs ctI =
+type IntOpAPI i sas ctI =
   QueryParam "delay" Delay :>
-  JobsAPI sas cs ctI JSON Value i Int
+  JobsAPI sas ctI JSON Value i Int
 
-type PolynomialAPI sas cs ctI =
+type PolynomialAPI sas ctI =
   QueryParam "sum"     JobServerAPI :>
   QueryParam "product" JobServerAPI :>
   QueryFlag  "pure" :>
-  IntOpAPI Polynomial sas cs ctI
+  IntOpAPI Polynomial sas ctI
 
-type CalcAPI sas cs ctI
-    =  "sum"        :> IntOpAPI Ints sas cs ctI
-  :<|> "product"    :> IntOpAPI Ints sas cs ctI
-  :<|> "polynomial" :> PolynomialAPI sas cs ctI
+type CalcAPI sas ctI
+    =  "sum"        :> IntOpAPI Ints sas ctI
+  :<|> "product"    :> IntOpAPI Ints sas ctI
+  :<|> "polynomial" :> PolynomialAPI sas ctI
 
-type API' cs ctI
-    =  "sync"     :> CalcAPI 'Sync     cs ctI
-  :<|> "async"    :> CalcAPI 'Async    cs ctI
-  :<|> "callback" :> CalcAPI 'Callback cs ctI
+type API' ctI
+    =  "sync"     :> CalcAPI 'Sync     ctI
+  :<|> "async"    :> CalcAPI 'Async    ctI
+  :<|> "callback" :> CalcAPI 'Callback ctI
 
-type API = API' 'Server '[JSON, FormUrlEncoded]
+type API = API' '[JSON, FormUrlEncoded]
 
 purePolynomial :: Polynomial -> Int
 purePolynomial (P coefs input) =
@@ -172,8 +173,7 @@ productIntsLog log = productLog log . _ints_x
 logConsole :: ToJSON a => a -> IO ()
 logConsole = LBS.putStrLn . encode
 
-{-
-serveStreamCalcAPI :: Env -> Server (CalcAPI 'Sync 'Server '[JSON])
+serveStreamCalcAPI :: Env -> Server (CalcAPI 'Sync '[JSON])
 serveStreamCalcAPI env
     =  wrap sumIntsLog
   :<|> wrap productIntsLog
@@ -181,7 +181,7 @@ serveStreamCalcAPI env
 
   where
     wrap :: ((Value -> IO ()) -> i -> IO Int) -> Maybe Delay -> Bool
-         -> Server (StreamJobsAPI 'Server Value i Int)
+         -> Server (StreamJobsAPI Value i Int)
     wrap f delayA streamMode i
       | streamMode = pure . simpleStreamGenerator $ \emit -> do
           let log e = do
@@ -190,15 +190,14 @@ serveStreamCalcAPI env
                 emit (JobFrame (Just e) Nothing)
           r <- f log i
           emit (JobFrame Nothing (Just r))
-      | otherwise  = pure . StreamGenerator $ \emit1 _ -> do
+      | otherwise = pure $ fromStepT $ Effect $ do
           let log e = do
                 waitDelay delayA
                 logConsole e
           r <- f log i
-          emit1 (JobFrame Nothing (Just r))
--}
+          pure $ Yield (JobFrame Nothing (Just r)) Stop
 
-serveAsyncCalcAPI :: Env -> Server (CalcAPI 'Async 'Server '[JSON])
+serveAsyncCalcAPI :: Env -> Server (CalcAPI 'Async '[JSON])
 serveAsyncCalcAPI env
     =  wrap sumIntsLog
   :<|> wrap productIntsLog
@@ -221,7 +220,7 @@ waitDelay = mapM_ (threadDelay . (* oneSecond) . unDelay)
   where
     oneSecond = 1000000
 
-serveCallbackCalcAPI :: Env -> Server (CalcAPI 'Callback 'Server '[JSON])
+serveCallbackCalcAPI :: Env -> Server (CalcAPI 'Callback '[JSON])
 serveCallbackCalcAPI env
     =  wrap sumIntsLog
   :<|> wrap productIntsLog

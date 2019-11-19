@@ -151,9 +151,12 @@ newJob env task i = liftIO $ do
     postCallback :: ChanMessage e i o -> IO ()
     postCallback m =
       forM_ (i ^. job_callback) $ \url ->
+        undefined
+        {-
         liftIO (runClientM (clientMCallback m)
                 (S.ClientEnv (env ^. jenv_manager)
                              (url ^. base_url) Nothing))
+        -}
     pushLog :: MVar [e] -> e -> IO ()
     pushLog m e = do
       postCallback $ mkChanEvent e
@@ -172,7 +175,7 @@ newIOJob :: (MonadIO m, ToJSON e, ToJSON o)
          => JobEnv e o -> IO o -> m (JobStatus 'Safe e)
 newIOJob env m = newJob env (JobFunction (\_ _ -> m)) (JobInput () Nothing)
 
-getJob :: JobEnv e o -> JobID 'Safe -> Handler (Job e o)
+getJob :: MonadServantJob m => JobEnv e o -> JobID 'Safe -> m (Job e o)
 getJob env jid = view env_item <$> getItem (env ^. jenv_jobs) jid
 
 jobStatus :: JobID 'Safe -> Maybe Limit -> Maybe Offset -> [e] -> Text -> JobStatus 'Safe e
@@ -204,7 +207,8 @@ killJob limit offset env jid job = do
   deleteJob env jid
   pure $ jobStatus jid limit offset log "killed"
 
-waitJob :: Bool -> JobEnv e o -> JobID 'Safe -> Job e a -> Handler (JobOutput a)
+waitJob :: MonadServantJob m
+        => Bool -> JobEnv e o -> JobID 'Safe -> Job e a -> m (JobOutput a)
 waitJob alsoDeleteJob env jid job = do
   r <- either err pure =<< liftIO (waitCatch $ job ^. job_async)
   -- NOTE one might prefer not to deleteJob here and ask the client to
@@ -225,11 +229,11 @@ waitJob alsoDeleteJob env jid job = do
   where
     err e = throwError $ err500 { errBody = LBS.pack $ show e }
 
-serveJobsAPI :: forall e i o ctI ctO.
-                (ToJSON e, ToJSON o)
+serveJobsAPI :: forall e i o ctI ctO m.
+                (MonadServantJob m, ToJSON e, ToJSON o)
              => JobEnv e o
              -> JobFunction e i o
-             -> AsyncJobsServer' ctI ctO e i o
+             -> AsyncJobsServerT' ctI ctO e i o m
 serveJobsAPI env f
     =  newJob env f
   :<|> wrap' killJob
@@ -237,8 +241,8 @@ serveJobsAPI env f
   :<|> (wrap . waitJob) False
 
   where
-    wrap :: forall a. (JobEnv e o -> JobID 'Safe -> Job e o -> Handler a)
-                   -> JobID 'Unsafe -> Handler a
+    wrap :: forall a. (JobEnv e o -> JobID 'Safe -> Job e o -> m a)
+                   -> JobID 'Unsafe -> m a
     wrap g jid' = do
       jid <- checkID (env ^. jenv_jobs) jid'
       job <- getJob env jid

@@ -15,7 +15,7 @@ import Network.HTTP.Client.TLS
 import Network.Wai.Handler.Warp hiding (defaultSettings)
 import Servant
 import Servant.Job.Utils (jsonOptions)
-import Servant.Client hiding (manager, ClientEnv)
+import Servant.Client.Streaming hiding (manager, ClientEnv)
 import Servant.Job.Async
 import Servant.Job.Client
 import Servant.Job.Server

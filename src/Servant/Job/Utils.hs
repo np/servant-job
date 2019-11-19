@@ -26,6 +26,7 @@ import qualified Data.Text as T
 import Debug.Trace
 import Web.FormUrlEncoded
 import Servant
+import Servant.Types.SourceT
 import Servant.Client hiding (manager, ClientEnv)
 
 (</>) :: String -> String -> String
@@ -75,11 +76,20 @@ infixr 4 ?!
 (?!) ma msg = ma ?| error msg
 
 {-
-simpleStreamGenerator :: ((a -> IO ()) -> IO ()) -> StreamGenerator a
-simpleStreamGenerator k = StreamGenerator $ \emit1 emit2 -> do
-  emitM <- newMVar emit1
+simpleStreamGeneratorIO :: ((a -> IO ()) -> IO ()) -> SourceT IO a
+simpleStreamGeneratorIO k = SourceT $ \k' ->
+  k' $ \
+  k $ \a ->
+-}
+-- TODO STREAMING
+simpleStreamGenerator :: ((a -> IO ()) -> IO ()) -> SourceT m a
+simpleStreamGenerator = undefined
+{-
+simpleStreamGenerator k = SourceT $ \k' -> do
+  v <- newMVar emit1
   k $ \a -> do
-    emit <- takeMVar emitM
-    emit a
-    putMVar emitM emit2
+    s <- takeMVar v
+    putMVar v (Yield a s)
+  s <- takeMVar v
+  k' s
 -}

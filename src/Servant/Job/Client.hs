@@ -35,7 +35,6 @@ module Servant.Job.Client
   , mkURL
   , JobServerAPI(..)
   , JobServerURL(..)
-  , ClientOrServer(..)
 
   , CallbackJobsAPI
   , CallbackJobsAPI'
@@ -56,7 +55,7 @@ module Servant.Job.Client
 
   -- Internals
   , MonadClientJob
-  --, clientSyncJob
+  , clientSyncJob
   , clientAsyncJob
   , clientCallbackJob'
   , clientCallbackJob
@@ -101,8 +100,10 @@ import qualified Servant.Job.Core as Core
 import Servant.Job.Core
 import Servant.Job.Utils
 import Servant.Job.Types
-import Servant.Client hiding (manager, ClientEnv)
-import qualified Servant.Client as S
+-- import Servant.Client (ClientM, ClientError, client) -- hiding (manager, ClientEnv)
+import Servant.Client.Streaming (ClientM, ClientError, client) -- hiding (manager, ClientEnv)
+-- import qualified Servant.Client as SC
+import qualified Servant.Client.Streaming as SC
 
 asyncJobsAPI :: proxy e i o -> Proxy (Flat (AsyncJobsAPI' 'Unsafe 'Unsafe '[JSON] '[JSON] e i o))
 asyncJobsAPI _ = Proxy
@@ -163,10 +164,14 @@ progress event = do
   liftIO $ unLogEvent log_event event
 
 runClientJob :: M m => URL -> (ClientError -> ClientJobError) -> ClientM a -> m a
+runClientJob = undefined
+{- TODO STREAMING
 runClientJob url err m = do
   env <- ask
-  liftIO (runClientM m (S.ClientEnv (env ^. cenv_manager) (url ^. base_url) Nothing))
+  let cenv = SC.ClientEnv (env ^. cenv_manager) (url ^. base_url) Nothing
+  liftIO (runClientM m cenv)
     >>= either (throwError . err) pure
+-}
 
 onRunningJob :: M m => RunningJob e i o
                     -> (forall a. Ord a => a -> Endom (Set a))
@@ -178,10 +183,11 @@ onRunningJob job f = do
 forgetRunningJob :: RunningJob e i o -> RunningJob e' i' o'
 forgetRunningJob (PrivateRunningJob u a i) = PrivateRunningJob u a i
 
-{-
 clientSyncJob :: (ToJSON i, ToJSON e, FromJSON e, FromJSON o, M m)
               => Bool -> JobServerURL e i o -> i -> m (JobOutput o)
 clientSyncJob streamMode jurl input = do
+  undefined
+{- TODO STREAMING
   let clientStream = client (syncJobsAPIClient jurl) streamMode input
   ResultStream k <- runClientJob (jurl ^. job_server_url) StartingJobError $
                       clientStream
@@ -351,9 +357,8 @@ callJobM jurl input = do
   progress $ NewTask jurl
   case jurl ^. job_server_api of
     Async    -> clientAsyncJob jurl input
-    --Sync     -> wrap $ clientSyncJob streamMode
+    Sync     -> wrap $ clientSyncJob streamMode
     Callback -> wrap clientCallbackJob
-    _    -> clientAsyncJob jurl input
 
   where
     -- TODO we should have a way to control streaming

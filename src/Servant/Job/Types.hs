@@ -13,7 +13,7 @@ import Control.Applicative
 import Control.Concurrent.Chan
 import Control.Concurrent.MVar (MVar)
 import Control.Lens
-import Control.Exception
+import Control.Exception hiding (Handler)
 import Data.Aeson
 import qualified Data.HashMap.Strict as H
 import Data.Set (Set)
@@ -151,10 +151,14 @@ type AsyncJobAPI event output = AsyncJobAPI' 'Safe '[JSON] event output
 
 type AsyncJobsAPI event input output = Flat (AsyncJobsAPI' 'Unsafe 'Safe '[JSON] '[JSON] event input output)
 
-type AsyncJobsServer' ctI ctO e i o =
-  Server (Flat (AsyncJobsAPI' 'Unsafe 'Safe ctI ctO e i o))
+type AsyncJobsServerT' ctI ctO e i o m =
+  ServerT (Flat (AsyncJobsAPI' 'Unsafe 'Safe ctI ctO e i o)) m
 
-type AsyncJobsServer e i o = AsyncJobsServer' '[JSON] '[JSON] e i o
+type AsyncJobsServerT e i o m = AsyncJobsServerT' '[JSON] '[JSON] e i o m
+
+type AsyncJobsServer' ctI ctO e i o = AsyncJobsServerT' ctI ctO e i o Handler
+
+type AsyncJobsServer e i o = AsyncJobsServerT e i o Handler
 
 makeLenses ''JobStatus
 
@@ -179,27 +183,20 @@ instance (FromJSON e, FromJSON o) => FromJSON (JobFrame e o) where
 instance (ToJSON e, ToJSON o) => ToJSON (JobFrame e o) where
   toJSON = genericToJSON $ jsonOptions "_job_frame_"
 
-data ClientOrServer = Client | Server
-
-
-type family StreamFunctor (c :: ClientOrServer) :: * -> *
---type instance StreamFunctor 'Client = ResultStream
---type instance StreamFunctor 'Server = StreamGenerator
-
 type StreamJobsAPI' f ctI ctO e i o =
   ReqBody ctI i :>
       StreamPost NewlineFraming ctO (f (JobFrame e o))
 
-type StreamJobsAPI c e i o =
-  StreamJobsAPI' (StreamFunctor c) '[JSON, FormUrlEncoded] JSON e i o
+type StreamJobsAPI e i o =
+  StreamJobsAPI' SourceIO '[JSON, FormUrlEncoded] JSON e i o
 
 type SyncJobsAPI' f ctI ctO e i o =
   QueryFlag "stream" :> StreamJobsAPI' f ctI ctO e i o
 -- Post '[ctO] (JobOutput o)
 
-type SyncJobsAPI c e i o = SyncJobsAPI' (StreamFunctor c) '[JSON] JSON e i o
+type SyncJobsAPI e i o = SyncJobsAPI' SourceIO '[JSON] JSON e i o
 
-syncJobsAPIClient :: proxy e i o -> Proxy (SyncJobsAPI 'Client e i o)
+syncJobsAPIClient :: proxy e i o -> Proxy (SyncJobsAPI e i o)
 syncJobsAPIClient _ = Proxy
 
 type ChanID safety = ID safety "chan"
@@ -218,7 +215,8 @@ newtype AnyOutput = AnyOutput Value
 
 type CallbacksAPI = Capture "id" (ChanID 'Unsafe) :> CallbackAPI AnyEvent AnyOutput
 
-type CallbacksServer = Server (Flat CallbacksAPI)
+type CallbacksServerT m = ServerT (Flat CallbacksAPI) m
+type CallbacksServer = CallbacksServerT Handler
 
 -- This is internally almost equivalent to JobInput
 -- in JobInput the callback is optional.
@@ -253,13 +251,12 @@ type CallbackJobsAPI e i o =
   CallbackJobsAPI' '[JSON, FormUrlEncoded] '[JSON] e i o
 
 type family   JobsAPI' (sas :: JobServerAPI)
-                       (cs  :: ClientOrServer)
                        (ctI :: [*]) ctO e i o
-type instance JobsAPI' 'Sync     cs ctI ctO e i o = SyncJobsAPI' (StreamFunctor cs) ctI ctO e i o
-type instance JobsAPI' 'Async    _  ctI ctO e i o = AsyncJobsAPI' 'Unsafe 'Safe ctI '[ctO] e i o
-type instance JobsAPI' 'Callback _  ctI ctO e i o = CallbackJobsAPI' ctI '[ctO] e i o
+type instance JobsAPI' 'Sync     ctI ctO e i o = SyncJobsAPI' SourceIO ctI ctO e i o
+type instance JobsAPI' 'Async    ctI ctO e i o = AsyncJobsAPI' 'Unsafe 'Safe ctI '[ctO] e i o
+type instance JobsAPI' 'Callback ctI ctO e i o = CallbackJobsAPI' ctI '[ctO] e i o
 
-type JobsAPI sas cs ctI ctO e i o = Flat (JobsAPI' sas cs ctI ctO e i o)
+type JobsAPI sas ctI ctO e i o = Flat (JobsAPI' sas ctI ctO e i o)
 
 data ChanMessage e i o = ChanMessage
   { _msg_event  :: !(Maybe e)
