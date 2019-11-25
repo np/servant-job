@@ -166,5 +166,5 @@ main = do
   job_env <- newJobEnv defaultSettings manager
   app <-
     serveApiWithCallbacks (Proxy :: Proxy API) defaultSettings selfurl manager (LogEvent logConsole) $
-      serveJobsAPI job_env . JobFunction . pipeline (URL scrapyurl)
+      simpleServeJobsAPI job_env . simpleJobFunction . pipeline (URL scrapyurl)
   run port app

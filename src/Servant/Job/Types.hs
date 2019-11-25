@@ -1,5 +1,6 @@
 {-# LANGUAGE DeriveGeneric              #-}
 {-# LANGUAGE DataKinds                  #-}
+{-# LANGUAGE FlexibleInstances          #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE KindSignatures             #-}
 {-# LANGUAGE OverloadedStrings          #-}
@@ -14,7 +15,9 @@ import Control.Concurrent.Chan
 import Control.Concurrent.MVar (MVar)
 import Control.Lens
 import Control.Exception hiding (Handler)
+import Control.Monad.Except
 import Data.Aeson
+import Data.Aeson.Types hiding (parseMaybe)
 import qualified Data.HashMap.Strict as H
 import Data.Set (Set)
 import Data.Swagger hiding (url, URL)
@@ -73,7 +76,7 @@ instance ToHttpApiData URL where
 mkURL :: BaseUrl -> String -> URL
 mkURL url path = URL $ url { baseUrlPath = baseUrlPath url </> path }
 
-data JobServerURL e i o = JobServerURL
+data JobServerURL event input output = JobServerURL
   { _job_server_url :: !URL
   , _job_server_api :: !JobServerAPI
   }
@@ -81,30 +84,57 @@ data JobServerURL e i o = JobServerURL
 
 makeLenses ''JobServerURL
 
-instance ToJSON (JobServerURL e i o) where
+instance ToJSON (JobServerURL event input output) where
   toJSON = genericToJSON $ jsonOptions "_job_server_"
 
-data JobInput a = JobInput
+data NoCallbacks url = NoCallbacks
+  deriving (Generic)
+
+instance ToJSON (NoCallbacks url) where
+  toJSON _ = Null
+
+instance FromJSON (NoCallbacks url) where
+  parseJSON Null = pure NoCallbacks
+  parseJSON v    = prependFailure "parsing NoCallbacks failed, " (typeMismatch "Null" v)
+
+instance Functor NoCallbacks where
+  fmap _ NoCallbacks = NoCallbacks
+
+instance Foldable NoCallbacks where
+  foldMap _ NoCallbacks = mempty
+
+instance Traversable NoCallbacks where
+  traverse _ NoCallbacks = pure NoCallbacks
+
+instance Applicative NoCallbacks where
+  pure _  = NoCallbacks
+  _ <*> _ = NoCallbacks
+
+instance Alternative NoCallbacks where
+  empty = NoCallbacks
+  _ <|> _ = NoCallbacks
+
+data JobInput f a = JobInput
   { _job_input    :: !a
-  , _job_callback :: !(Maybe URL)
+  , _job_callback :: !(f URL)
   }
   deriving Generic
 
 makeLenses ''JobInput
 
-instance ToJSON i => ToJSON (JobInput i) where
+instance (ToJSON (f URL), ToJSON input) => ToJSON (JobInput f input) where
   toJSON = genericToJSON $ jsonOptions "_job_"
 
-instance FromJSON i => FromJSON (JobInput i) where
+instance (FromJSON (f URL), FromJSON input, Alternative f) => FromJSON (JobInput f input) where
   parseJSON v =  genericParseJSON (jsonOptions "_job_") v
-             <|> JobInput <$> parseJSON v <*> pure Nothing
+             <|> JobInput <$> parseJSON v <*> pure empty
 
-instance ToForm i => ToForm (JobInput i) where
+instance ToForm input => ToForm (JobInput Maybe input) where
   toForm i =
     Form . H.insert "callback" (i ^.. job_callback . to toUrlPiece)
          $ unForm (toForm (i ^. job_input))
 
-instance FromForm i => FromForm (JobInput i) where
+instance FromForm input => FromForm (JobInput Maybe input) where
   fromForm f =
     JobInput <$> fromForm (Form (H.delete "input" (unForm f)))
              <*> parseMaybe "callback" f
@@ -115,17 +145,17 @@ newtype JobOutput a = JobOutput
 
 makeLenses ''JobOutput
 
-instance ToJSON o => ToJSON (JobOutput o) where
+instance ToJSON output => ToJSON (JobOutput output) where
   toJSON = genericToJSON $ jsonOptions "_job_"
 
-instance FromJSON o => FromJSON (JobOutput o) where
+instance FromJSON output => FromJSON (JobOutput output) where
   parseJSON = genericParseJSON $ jsonOptions "_job_"
 
 type JobID safety = ID safety "job"
 
-data JobStatus safety e = JobStatus
+data JobStatus safety event = JobStatus
   { _job_id     :: !(JobID safety)
-  , _job_log    :: ![e]
+  , _job_log    :: ![event]
   , _job_status :: !Text -- TODO: should be a type Started | Finished ...
   }
   deriving Generic
@@ -133,79 +163,82 @@ data JobStatus safety e = JobStatus
 newtype Limit  = Limit  { unLimit  :: Int } deriving (ToHttpApiData, FromHttpApiData)
 newtype Offset = Offset { unOffset :: Int } deriving (ToHttpApiData, FromHttpApiData)
 
-type JobStatusAPI meth safetyO e =
+type JobStatusAPI meth safetyO event =
   QueryParam "limit"  Limit  :>
   QueryParam "offset" Offset :>
-  meth '[JSON] (JobStatus safetyO e)
+  meth '[JSON] (JobStatus safetyO event)
 
-type AsyncJobAPI' safetyO ctO e o
-    =  "kill" :> JobStatusAPI Post safetyO e
-  :<|> "poll" :> JobStatusAPI Get  safetyO e
-  :<|> "wait" :> Get ctO (JobOutput o)
+type AsyncJobAPI' safetyO ctO event output
+    =  "kill" :> JobStatusAPI Post safetyO event
+  :<|> "poll" :> JobStatusAPI Get  safetyO event
+  :<|> "wait" :> Get ctO (JobOutput output)
 
-type AsyncJobsAPI' safetyI safetyO ctI ctO e i o
-    =  ReqBody ctI (JobInput i)     :> Post '[JSON] (JobStatus safetyO e)
-  :<|> Capture "id" (JobID safetyI) :> AsyncJobAPI' safetyO ctO e o
+type AsyncJobsAPI' safetyI safetyO ctI ctO callbacks event input output
+    =  ReqBody ctI (JobInput callbacks input) :> Post '[JSON] (JobStatus safetyO event)
+  :<|> Capture "id" (JobID safetyI) :> AsyncJobAPI' safetyO ctO event output
 
 type AsyncJobAPI event output = AsyncJobAPI' 'Safe '[JSON] event output
 
-type AsyncJobsAPI event input output = Flat (AsyncJobsAPI' 'Unsafe 'Safe '[JSON] '[JSON] event input output)
+type AsyncJobsAPI event input output =
+  Flat (AsyncJobsAPI' 'Unsafe 'Safe '[JSON] '[JSON] NoCallbacks event input output)
 
-type AsyncJobsServerT' ctI ctO e i o m =
-  ServerT (Flat (AsyncJobsAPI' 'Unsafe 'Safe ctI ctO e i o)) m
+type AsyncJobsServerT' ctI ctO callbacks event input output m =
+  ServerT (Flat (AsyncJobsAPI' 'Unsafe 'Safe ctI ctO callbacks event input output)) m
 
-type AsyncJobsServerT e i o m = AsyncJobsServerT' '[JSON] '[JSON] e i o m
+type AsyncJobsServerT event input output m = AsyncJobsServerT' '[JSON] '[JSON] NoCallbacks event input output m
 
-type AsyncJobsServer' ctI ctO e i o = AsyncJobsServerT' ctI ctO e i o Handler
+type AsyncJobsServer' ctI ctO event input output = AsyncJobsServerT' ctI ctO NoCallbacks event input output Handler
 
-type AsyncJobsServer e i o = AsyncJobsServerT e i o Handler
+type AsyncJobsServer event input output = AsyncJobsServerT event input output Handler
 
 makeLenses ''JobStatus
 
-instance (safety ~ 'Safe, ToJSON e) => ToJSON (JobStatus safety e) where
+instance (safety ~ 'Safe, ToJSON event) => ToJSON (JobStatus safety event) where
   toJSON = genericToJSON $ jsonOptions "_job_"
 
-instance (safety ~ 'Unsafe, FromJSON e) => FromJSON (JobStatus safety e) where
+instance (safety ~ 'Unsafe, FromJSON event) => FromJSON (JobStatus safety event) where
   parseJSON = genericParseJSON $ jsonOptions "_job_"
 
-instance ToSchema e => ToSchema (JobStatus safety e) where
+instance ToSchema event => ToSchema (JobStatus safety event) where
   declareNamedSchema = genericDeclareNamedSchema $ swaggerOptions "_job_"
 
-data JobFrame e o = JobFrame
-  { _job_frame_event  :: Maybe e
-  , _job_frame_output :: Maybe o
+data JobFrame event output = JobFrame
+  { _job_frame_event  :: Maybe event
+  , _job_frame_output :: Maybe output
   }
   deriving (Generic)
 
-instance (FromJSON e, FromJSON o) => FromJSON (JobFrame e o) where
+instance (FromJSON event, FromJSON output) => FromJSON (JobFrame event output) where
   parseJSON = genericParseJSON $ jsonOptions "_job_frame_"
 
-instance (ToJSON e, ToJSON o) => ToJSON (JobFrame e o) where
+instance (ToJSON event, ToJSON output) => ToJSON (JobFrame event output) where
   toJSON = genericToJSON $ jsonOptions "_job_frame_"
 
-type StreamJobsAPI' f ctI ctO e i o =
-  ReqBody ctI i :>
-      StreamPost NewlineFraming ctO (f (JobFrame e o))
+type StreamJobsAPI' f ctI ctO event input output =
+  ReqBody ctI input :>
+      StreamPost NewlineFraming ctO (f (JobFrame event output))
 
-type StreamJobsAPI e i o =
-  StreamJobsAPI' SourceIO '[JSON, FormUrlEncoded] JSON e i o
+type StreamJobsAPI event input output =
+  StreamJobsAPI' SourceIO '[JSON, FormUrlEncoded] JSON event input output
 
-type SyncJobsAPI' f ctI ctO e i o =
-  QueryFlag "stream" :> StreamJobsAPI' f ctI ctO e i o
--- Post '[ctO] (JobOutput o)
+type SyncJobsAPI' f ctI ctO event input output =
+  QueryFlag "stream" :> StreamJobsAPI' f ctI ctO event input output
+-- Post '[ctO] (JobOutput output)
 
-type SyncJobsAPI e i o = SyncJobsAPI' SourceIO '[JSON] JSON e i o
+type SyncJobsAPI event input output = SyncJobsAPI' SourceIO '[JSON] JSON event input output
 
-syncJobsAPIClient :: proxy e i o -> Proxy (SyncJobsAPI e i o)
+syncJobsAPIClient :: proxy event input output -> Proxy (SyncJobsAPI event input output)
 syncJobsAPIClient _ = Proxy
 
 type ChanID safety = ID safety "chan"
 
-type CallbackAPI e o
-    =  "event"  :> ReqBody '[JSON] e :> Post '[JSON] ()
-  :<|> "error"  :> ReqBody '[JSON] String :> Post '[JSON] ()
-  :<|> "output" :> ReqBody '[JSON] o :> Post '[JSON] ()
+type CallbackAPI error event output
+    =  "event"  :> ReqBody '[JSON] event  :> Post '[JSON] ()
+  :<|> "error"  :> ReqBody '[JSON] error  :> Post '[JSON] ()
+  :<|> "output" :> ReqBody '[JSON] output :> Post '[JSON] ()
 
+newtype AnyError  = AnyError  Value
+  deriving (FromJSON, ToJSON)
 newtype AnyEvent  = AnyEvent  Value
   deriving (FromJSON, ToJSON)
 newtype AnyInput  = AnyInput  Value
@@ -213,79 +246,82 @@ newtype AnyInput  = AnyInput  Value
 newtype AnyOutput = AnyOutput Value
   deriving (FromJSON, ToJSON)
 
-type CallbacksAPI = Capture "id" (ChanID 'Unsafe) :> CallbackAPI AnyEvent AnyOutput
+type CallbacksAPI = Capture "id" (ChanID 'Unsafe) :> CallbackAPI AnyError AnyEvent AnyOutput
 
 type CallbacksServerT m = ServerT (Flat CallbacksAPI) m
 type CallbacksServer = CallbacksServerT Handler
 
 -- This is internally almost equivalent to JobInput
 -- in JobInput the callback is optional.
-data CallbackInput e i o = CallbackInput
-  { _cbi_input    :: !i
+data CallbackInput event input output = CallbackInput
+  { _cbi_input    :: !input
   , _cbi_callback :: !URL
   } deriving (Generic)
 
 makeLenses ''CallbackInput
 
-instance FromJSON i => FromJSON (CallbackInput e i o) where
+instance FromJSON input => FromJSON (CallbackInput event input output) where
   parseJSON = genericParseJSON $ jsonOptions "_cbi_"
 
-instance ToJSON i => ToJSON (CallbackInput e i o) where
+instance ToJSON input => ToJSON (CallbackInput event input output) where
   toJSON = genericToJSON $ jsonOptions "_cbi_"
 
-instance ToForm i => ToForm (CallbackInput e i o) where
+instance ToForm input => ToForm (CallbackInput event input output) where
   toForm cbi =
     Form . H.insert "callback" (cbi ^.. cbi_callback . to toUrlPiece)
          $ unForm (toForm (cbi ^. cbi_input))
 
-instance FromForm i => FromForm (CallbackInput e i o) where
+instance FromForm input => FromForm (CallbackInput event input output) where
   fromForm f =
     CallbackInput
       <$> fromForm (Form (H.delete "callback" (unForm f)))
       <*> parseUnique "callback" f
 
-type CallbackJobsAPI' ctI ctO e i o =
-  ReqBody ctI (CallbackInput e i o) :> Post ctO ()
+type CallbackJobsAPI' ctI ctO event input output =
+  ReqBody ctI (CallbackInput event input output) :> Post ctO ()
 
-type CallbackJobsAPI e i o =
-  CallbackJobsAPI' '[JSON, FormUrlEncoded] '[JSON] e i o
+type CallbackJobsAPI event input output =
+  CallbackJobsAPI' '[JSON, FormUrlEncoded] '[JSON] event input output
 
 type family   JobsAPI' (sas :: JobServerAPI)
-                       (ctI :: [*]) ctO e i o
-type instance JobsAPI' 'Sync     ctI ctO e i o = SyncJobsAPI' SourceIO ctI ctO e i o
-type instance JobsAPI' 'Async    ctI ctO e i o = AsyncJobsAPI' 'Unsafe 'Safe ctI '[ctO] e i o
-type instance JobsAPI' 'Callback ctI ctO e i o = CallbackJobsAPI' ctI '[ctO] e i o
+                       (ctI :: [*]) ctO event input output
+type instance JobsAPI' 'Sync     ctI ctO event input output = SyncJobsAPI' SourceIO ctI ctO event input output
+type instance JobsAPI' 'Async    ctI ctO event input output = AsyncJobsAPI' 'Unsafe 'Safe ctI '[ctO] NoCallbacks event input output
+-- TODO provide also a version of Async with the callbacks
+type instance JobsAPI' 'Callback ctI ctO event input output = CallbackJobsAPI' ctI '[ctO] event input output
 
-type JobsAPI sas ctI ctO e i o = Flat (JobsAPI' sas ctI ctO e i o)
+type JobsAPI sas ctI ctO event input output = Flat (JobsAPI' sas ctI ctO event input output)
 
-data ChanMessage e i o = ChanMessage
-  { _msg_event  :: !(Maybe e)
-  , _msg_result :: !(Maybe o)
-  , _msg_error  :: !(Maybe String)
+data ChanMessage error event input output = ChanMessage
+  { _msg_event  :: !(Maybe event)
+  , _msg_result :: !(Maybe output)
+  , _msg_error  :: !(Maybe error)
   }
   deriving (Generic)
 
 makeLenses ''ChanMessage
 
+type AnyChanMessage = ChanMessage AnyError AnyEvent AnyInput AnyOutput
+
 {-
-_ChanEvent  :: Prism' (ChanMessage e i o) e
+_ChanEvent  :: Prism' (ChanMessage error event input output) event
 _ChanEvent =
-_ChanResult :: Prism' (ChanMessage e i o) o
+_ChanResult :: Prism' (ChanMessage error event input output) output
 _ChanResult =
-_ChanError  :: Prism' (ChanMessage e i o) String
+_ChanError  :: Prism' (ChanMessage error event input output) String
 _ChanError =
 -}
-mkChanEvent  :: e -> ChanMessage e i o
+mkChanEvent  :: event -> ChanMessage error event input output
 mkChanEvent e = ChanMessage (Just e) Nothing Nothing
-mkChanResult :: o -> ChanMessage e i o
-mkChanResult o = ChanMessage Nothing (Just o) Nothing
-mkChanError  :: String -> ChanMessage e i o
+mkChanResult :: output -> ChanMessage error event input output
+mkChanResult output = ChanMessage Nothing (Just output) Nothing
+mkChanError  :: error -> ChanMessage error event input output
 mkChanError m = ChanMessage Nothing Nothing (Just m)
 
-instance (ToJSON e, ToJSON o) => ToJSON (ChanMessage e i o) where
+instance (ToJSON error, ToJSON event, ToJSON output) => ToJSON (ChanMessage error event input output) where
   toJSON = genericToJSON $ jsonOptions "_msg_"
 
-instance (FromJSON e, FromJSON o) => FromJSON (ChanMessage e i o) where
+instance (FromJSON error, FromJSON event, FromJSON output) => FromJSON (ChanMessage error event input output) where
   parseJSON = genericParseJSON $ jsonOptions "_msg_"
 
 type instance SymbolOf (Chan Value) = "chan"
@@ -299,7 +335,7 @@ data Chans = Chans
 
 makeLenses ''Chans
 
-data RunningJob e i o = PrivateRunningJob
+data RunningJob event input output = PrivateRunningJob
   { _running_job_url :: URL
   , _running_job_api :: JobServerAPI
   , _running_job_id  :: JobID 'Unsafe
@@ -308,26 +344,26 @@ data RunningJob e i o = PrivateRunningJob
 
 makeLenses ''RunningJob
 
-data Event e i o
-  = NewTask  { _event_server :: JobServerURL e i o }
-  | Started  { _event_server :: JobServerURL e i o
+data Event event input output
+  = NewTask  { _event_server :: JobServerURL event input output }
+  | Started  { _event_server :: JobServerURL event input output
              , _event_job_id :: Maybe (JobID 'Unsafe) }
-  | Finished { _event_server :: JobServerURL e i o
+  | Finished { _event_server :: JobServerURL event input output
              , _event_job_id :: Maybe (JobID 'Unsafe) }
-  | Event    { _event_server :: JobServerURL e i o
+  | Event    { _event_server :: JobServerURL event input output
              , _event_job_id :: Maybe (JobID 'Unsafe)
-             , _event_event  :: e }
-  | BadEvent { _event_server :: JobServerURL e i o
+             , _event_event  :: event }
+  | BadEvent { _event_server :: JobServerURL event input output
              , _event_job_id :: Maybe (JobID 'Unsafe)
              , _event_event_value :: Value }
-  | Debug e
+  | Debug event
   deriving (Generic)
 
-instance ToJSON e => ToJSON (Event e i o) where
+instance ToJSON event => ToJSON (Event event input output) where
   toJSON = genericToJSON $ jsonOptions "_event_"
 
 newtype LogEvent = LogEvent
-  { unLogEvent :: forall e i o. ToJSON e => Event e i o -> IO () }
+  { unLogEvent :: forall event input output. ToJSON event => Event event input output -> IO () }
 
 data ClientEnv = ClientEnv
   { _cenv_manager          :: !Manager

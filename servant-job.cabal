@@ -4,10 +4,10 @@ cabal-version: 1.12
 --
 -- see: https://github.com/sol/hpack
 --
--- hash: 0f0f591f62d5951eaa87c61924874cb94e1e3b0de2d3ae8e84e69e86232a44cc
+-- hash: 2621a9af2aa12903df9200e869dddb57f2620c0ae3e76227c88a5235149abcd5
 
 name:           servant-job
-version:        0.1.0.0
+version:        0.2.0.0
 synopsis:       Job API in Haskell Servant
 description:    Please see the README on Github at <https://github.com/np/servant-job#readme>
 category:       Web
@@ -27,6 +27,15 @@ source-repository head
   location: https://github.com/np/servant-job
 
 library
+  exposed-modules:
+      Servant.Job.Types
+      Servant.Job.Async
+      Servant.Job.Core
+      Servant.Job.Utils
+      Servant.Job.Client
+      Servant.Job.Server
+  other-modules:
+      Paths_servant_job
   hs-source-dirs:
       src
   build-depends:
@@ -50,19 +59,12 @@ library
     , text
     , time
     , unordered-containers
-  exposed-modules:
-      Servant.Job.Types
-      Servant.Job.Async
-      Servant.Job.Core
-      Servant.Job.Utils
-      Servant.Job.Client
-      Servant.Job.Server
-  other-modules:
-      Paths_servant_job
   default-language: Haskell2010
 
 executable servant-job-calc-example
   main-is: calc.hs
+  other-modules:
+      Paths_servant_job
   hs-source-dirs:
       example
   ghc-options: -threaded -rtsopts -with-rtsopts=-N
@@ -90,12 +92,12 @@ executable servant-job-calc-example
     , unordered-containers
     , wai
     , warp
-  other-modules:
-      Paths_servant_job
   default-language: Haskell2010
 
 executable servant-job-scrapy-example
   main-is: scrapy-orch.hs
+  other-modules:
+      Paths_servant_job
   hs-source-dirs:
       example
   ghc-options: -threaded -rtsopts -with-rtsopts=-N
@@ -123,6 +125,4 @@ executable servant-job-scrapy-example
     , time
     , unordered-containers
     , warp
-  other-modules:
-      Paths_servant_job
   default-language: Haskell2010

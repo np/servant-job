@@ -77,9 +77,9 @@ instance ToForm Ints where
 
 newtype Delay = Delay { unDelay :: Int } deriving (FromHttpApiData)
 
-type IntOpAPI i sas ctI =
+type IntOpAPI input sas ctI =
   QueryParam "delay" Delay :>
-  JobsAPI sas ctI JSON Value i Int
+  JobsAPI sas ctI JSON Value input Int
 
 type PolynomialAPI sas ctI =
   QueryParam "sum"     JobServerAPI :>
@@ -103,7 +103,7 @@ purePolynomial :: Polynomial -> Int
 purePolynomial (P coefs input) =
   sum . zipWith (*) coefs $ iterate (input *) 1
 
-makeJobServerURL :: String -> BaseUrl -> Maybe JobServerAPI -> JobServerURL e i o
+makeJobServerURL :: String -> BaseUrl -> Maybe JobServerAPI -> JobServerURL e input o
 makeJobServerURL path url m =
     JobServerURL (mkURL url (T.unpack (toUrlPiece sas) </> path)) sas
   where
@@ -204,13 +204,16 @@ serveAsyncCalcAPI env
   :<|> \sumA prodA pureA -> wrap (ioPolynomial env sumA prodA pureA)
 
   where
-    wrap :: ToJSON i => ((Value -> IO ()) -> i -> IO Int) -> Maybe Delay
-         -> Server (Flat (AsyncJobsAPI Value i Int))
+    wrap :: (FromJSON i, ToJSON i) => ((Value -> IO ()) -> i -> IO Int) -> Maybe Delay
+         -> Server (AsyncJobsAPI Value i Int)
     wrap f delayA =
       let wraplog log i = waitDelay delayA >> logConsole i >> log i in
-      serveJobsAPI (jobEnv env) (JobFunction (\i log -> f (wraplog log) i))
+      simpleServeJobsAPI (jobEnv env) (simpleJobFunction (\i log -> f (wraplog log) i))
 
-runClientCallbackIO :: (ToJSON e, ToJSON i, ToJSON o) => ClientEnv -> URL -> ChanMessage e i o -> IO ()
+runClientCallbackIO :: (ToJSON error, ToJSON event, ToJSON input, ToJSON output)
+                    => ClientEnv -> URL
+                    -> ChanMessage error event input output
+                    -> IO ()
 runClientCallbackIO env cb_url msg =
   runExceptT (runReaderT (clientCallback cb_url msg) env)
     >>= either (fail . show) pure
@@ -227,11 +230,11 @@ serveCallbackCalcAPI env
   :<|> \sumA prodA pureA -> wrap (ioPolynomial env sumA prodA pureA)
 
   where
-    wrap :: forall i. ToJSON i => ((Value -> IO ()) -> i -> IO Int)
-         -> Maybe Delay -> Server (CallbackJobsAPI Value i Int)
+    wrap :: forall input. ToJSON input => ((Value -> IO ()) -> input -> IO Int)
+         -> Maybe Delay -> Server (CallbackJobsAPI Value input Int)
     wrap f delayA cbi = liftIO $ do
       let
-        log_event :: ChanMessage Value i Int -> IO ()
+        log_event :: ChanMessage () Value input Int -> IO ()
         log_event e = do
           waitDelay delayA
           runClientCallbackIO (envClient env) (cbi ^. cbi_callback) e

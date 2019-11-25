@@ -35,6 +35,7 @@ import Control.Concurrent.MVar (newMVar)
 import Control.Lens
 import Control.Monad.IO.Class
 import Control.Monad.Except
+import Control.Monad.Reader
 import Data.Aeson
 import qualified Data.Set as Set
 import Network.HTTP.Client hiding (Proxy, path)
@@ -46,25 +47,25 @@ import Servant.Job.Types
 import Servant.Client hiding (manager, ClientEnv)
 
 -- See newChans
-serveCallbacks :: forall m. MonadServantJob m
-               => ChansEnv -> CallbacksServerT m
-serveCallbacks env
+serveCallbacks :: forall env err m. MonadServantJob env err (Chan Value) m
+               => CallbacksServerT m
+serveCallbacks
     =  wrap mkChanEvent
   :<|> wrap mkChanError
   :<|> wrap mkChanResult
 
   where
-    wrap :: (msg -> ChanMessage AnyEvent AnyInput AnyOutput)
-         -> ChanID 'Unsafe -> msg -> m ()
+    wrap :: (msg -> AnyChanMessage) -> ChanID 'Unsafe -> msg -> m ()
     wrap mk chanID' msg = do
-      chanID <- checkID env chanID'
-      item <- Core.getItem env chanID
+      chanID <- checkID chanID'
+      item <- Core.getItem chanID
       liftIO $ writeChan (item ^. env_item) (toJSON $ mk msg)
 
-newChans :: MonadServantJob m => EnvSettings -> URL -> IO (Chans, CallbacksServerT m)
+newChans :: MonadServantJobErr err m => EnvSettings -> URL -> IO (Chans, CallbacksServerT m)
 newChans settings url = do
   env <- newEnv settings
-  pure (Chans env url, serveCallbacks env)
+  let srv = hoistServer (Proxy :: Proxy (Flat CallbacksAPI)) (flip runReaderT env) serveCallbacks
+  pure (Chans env url, srv)
 
 newClientEnv :: Manager -> Chans -> LogEvent -> IO ClientEnv
 newClientEnv manager chans log_event

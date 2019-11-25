@@ -1,7 +1,10 @@
 {-# LANGUAGE ConstraintKinds #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE FlexibleInstances #-}
+{-# LANGUAGE FunctionalDependencies #-}
 {-# LANGUAGE KindSignatures #-}
+{-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TemplateHaskell #-}
@@ -15,11 +18,16 @@ module Servant.Job.Core
   , id_token
   , SymbolOf
 
+  , HasServerError(..)
+  , serverError
+
+  , MonadServantJobErr
   , MonadServantJob
 
   , deleteExpiredItems
 
   , Env
+  , HasEnv(_env)
   , newEnv
   , env_secret_key
   , env_state_mvar
@@ -58,6 +66,7 @@ import Control.Lens
 import Control.Monad
 import Control.Monad.IO.Class
 import Control.Monad.Except
+import Control.Monad.Reader
 import Data.Aeson
 import qualified Data.ByteString.Lazy.Char8 as LBS
 import Data.Digest.Pure.SHA (hmacSha256, showDigest)
@@ -112,7 +121,29 @@ data Env a = Env
   , _env_settings   :: !EnvSettings
   }
 
-type MonadServantJob m = (MonadIO m, MonadError ServerError m)
+class HasEnv env a | env -> a where
+  _env :: Lens' env (Env a)
+
+instance HasEnv (Env a) a where
+  _env = id
+
+class HasServerError err where
+  _ServerError :: Prism' err ServerError
+
+serverError :: (MonadError err m, HasServerError err) => ServerError -> m a
+serverError e = throwError $ _ServerError # e
+
+instance HasServerError ServerError where
+  _ServerError = id
+
+type MonadServantJobErr err m = (MonadIO m, MonadError err m, HasServerError err)
+type MonadServantJob env err a m =
+  ( MonadIO m
+  , MonadReader env m
+  , MonadError err m
+  , HasServerError err
+  , HasEnv env a
+  )
 
 makeLensesWith (lensRules & generateSignatures .~ False) ''ID
 -- TODO Lens' -> Getter ?
@@ -217,16 +248,17 @@ deleteExpiredItems gcItem env = do
       let (valid, expired) = IntMap.partition (isValidItem now) (items ^. env_map)
       pure (items & env_map .~ valid, expired)
 
-checkID :: (KnownSymbol k, k ~ SymbolOf a, MonadServantJob m)
-        => Env a -> ID 'Unsafe k -> m (ID 'Safe k)
-checkID env i@(PrivateID tn n t d) = do
+checkID :: (KnownSymbol k, k ~ SymbolOf a, MonadServantJob env err a m)
+        => ID 'Unsafe k -> m (ID 'Safe k)
+checkID i@(PrivateID tn n t d) = do
+  env <- view _env
   now <- liftIO getCurrentTime
   when (tn /= symbolVal i) $
-    throwError $ err401 { errBody = "Invalid identifier type name" }
+    serverError $ err401 { errBody = "Invalid identifier type name" }
   when (now > addUTCTime (env ^. env_settings . env_duration) t) $
-    throwError $ err410 { errBody = "Expired identifier" }
+    serverError $ err410 { errBody = "Expired identifier" }
   when (d /= macID tn (env ^. env_secret_key) t n) $
-    throwError $ err401 { errBody = "Invalid identifier authentication code" }
+    serverError $ err401 { errBody = "Invalid identifier authentication code" }
   pure $ PrivateID tn n t d
 
 newItem :: forall a k. (KnownSymbol k, k ~ SymbolOf a) => Env a -> IO a -> IO (ID 'Safe k, EnvItem a)
@@ -240,12 +272,13 @@ newItem env mkItem = do
           newID (Proxy :: Proxy k) (env ^. env_secret_key) now n)
   pure (ident, item)
 
-getItem :: (MonadServantJob m, KnownSymbol k, k ~ SymbolOf a)
-        => Env a -> ID 'Safe k -> m (EnvItem a)
-getItem env ident = do
+getItem :: (MonadServantJob env err a m, KnownSymbol k, k ~ SymbolOf a)
+        => ID 'Safe k -> m (EnvItem a)
+getItem ident = do
+  env <- view _env
   m <- liftIO . readMVar $ env ^. env_state_mvar
   maybe notFound pure $ m ^. env_map . at (ident ^. id_number)
 
   where
     msg = "Not Found: " ++ symbolVal ident
-    notFound = throwError $ err404 { errBody = LBS.pack msg, errReasonPhrase = msg }
+    notFound = serverError $ err404 { errBody = LBS.pack msg, errReasonPhrase = msg }
