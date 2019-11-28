@@ -51,7 +51,8 @@ jsonOptions :: Text -> Options
 jsonOptions pref = defaultOptions
   { Data.Aeson.Types.fieldLabelModifier = modifier pref
   , Data.Aeson.Types.unwrapUnaryRecords = False
-  , Data.Aeson.Types.omitNothingFields = True }
+  , Data.Aeson.Types.omitNothingFields = True
+  }
 
 formOptions :: Text -> FormOptions
 formOptions pref = defaultFormOptions

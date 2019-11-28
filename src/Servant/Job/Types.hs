@@ -180,8 +180,8 @@ data JobStatus safety event = JobStatus
   }
   deriving Generic
 
-newtype Limit  = Limit  { unLimit  :: Int } deriving (ToHttpApiData, FromHttpApiData)
-newtype Offset = Offset { unOffset :: Int } deriving (ToHttpApiData, FromHttpApiData)
+newtype Limit  = Limit  { unLimit  :: Int } deriving (ToHttpApiData, FromHttpApiData, Generic)
+newtype Offset = Offset { unOffset :: Int } deriving (ToHttpApiData, FromHttpApiData, Generic)
 
 type JobStatusAPI meth safetyO event =
   QueryParam "limit"  Limit  :>
