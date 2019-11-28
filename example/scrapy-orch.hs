@@ -15,7 +15,8 @@ import Network.HTTP.Client.TLS
 import Network.Wai.Handler.Warp hiding (defaultSettings)
 import Servant
 import Servant.Job.Utils (jsonOptions)
-import Servant.Client.Streaming hiding (manager, ClientEnv)
+import Servant.Client.Core
+import qualified Servant.Client as C
 import Servant.Job.Async
 import Servant.Job.Client
 import Servant.Job.Server
@@ -60,8 +61,8 @@ type Scrapy =
 scrapyAPI :: Proxy Scrapy
 scrapyAPI = Proxy
 
-scrapySchedule :: Schedule -> ClientM ScheduleResponse
-scrapySchedule = client scrapyAPI
+scrapySchedule :: Schedule -> C.ClientM ScheduleResponse
+scrapySchedule = C.client scrapyAPI
 
 data ScraperInput = ScraperInput
   { _scin_spider       :: !Text
@@ -163,8 +164,8 @@ main = do
   putStrLn $ "Server listening on port: " ++ show port
           ++ " and scrapyurl: " ++ scrapyurl'
   manager <- newTlsManager
-  job_env <- newJobEnv defaultSettings manager
+  jenv <- newJobEnv defaultSettings manager
   app <-
     serveApiWithCallbacks (Proxy :: Proxy API) defaultSettings selfurl manager (LogEvent logConsole) $
-      simpleServeJobsAPI job_env . simpleJobFunction . pipeline (URL scrapyurl)
+      simpleServeJobsAPI jenv . simpleJobFunction . pipeline (URL scrapyurl)
   run port app
