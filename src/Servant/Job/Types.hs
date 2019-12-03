@@ -119,6 +119,11 @@ instance Alternative NoCallbacks where
   empty = NoCallbacks
   _ <|> _ = NoCallbacks
 
+instance ToSchema (NoCallbacks a) where
+  declareNamedSchema _ = pure $ NamedSchema (Just "NoCallbacks") $ mempty
+    & type_ ?~ SwaggerNull
+    & description ?~ "Only the `null` value."
+
 data JobInput f a = JobInput
   { _job_input    :: !a
   , _job_callback :: !(f URL)
@@ -157,6 +162,10 @@ instance FromForm input => FromForm (JobInput Maybe input) where
     JobInput <$> fromForm (Form (H.delete "input" (unForm f)))
              <*> parseMaybe "callback" f
 
+instance (ToSchema (f URL), ToSchema a) => ToSchema (JobInput f a) where
+  declareNamedSchema = genericDeclareNamedSchema (swaggerOptions "_job_") &
+    mapped . mapped . schema . required .~ ["input"]
+
 newtype JobOutput a = JobOutput
   { _job_output :: a }
   deriving Generic
@@ -168,6 +177,9 @@ instance ToJSON output => ToJSON (JobOutput output) where
 
 instance FromJSON output => FromJSON (JobOutput output) where
   parseJSON = genericParseJSON $ jsonOptions "_job_"
+
+instance ToSchema a => ToSchema (JobOutput a) where
+  declareNamedSchema = genericDeclareNamedSchema $ swaggerOptions "_job_"
 
 instance NFData a => NFData (JobOutput a)
 
@@ -268,6 +280,26 @@ newtype AnyInput  = AnyInput  Value
   deriving (FromJSON, ToJSON)
 newtype AnyOutput = AnyOutput Value
   deriving (FromJSON, ToJSON)
+
+instance ToSchema AnyOutput where
+  declareNamedSchema _ = pure $ NamedSchema (Just "AnyOutput") $ mempty
+    & description ?~ "Arbitrary JSON value."
+    & additionalProperties ?~ AdditionalPropertiesAllowed True
+
+instance ToSchema AnyInput where
+  declareNamedSchema _ = pure $ NamedSchema (Just "AnyInput") $ mempty
+    & description ?~ "Arbitrary JSON value."
+    & additionalProperties ?~ AdditionalPropertiesAllowed True
+
+instance ToSchema AnyEvent where
+  declareNamedSchema _ = pure $ NamedSchema (Just "AnyEvent") $ mempty
+    & description ?~ "Arbitrary JSON value."
+    & additionalProperties ?~ AdditionalPropertiesAllowed True
+
+instance ToSchema AnyError where
+  declareNamedSchema _ = pure $ NamedSchema (Just "AnyError") $ mempty
+    & description ?~ "Arbitrary JSON value."
+    & additionalProperties ?~ AdditionalPropertiesAllowed True
 
 type CallbacksAPI = Capture "id" (ChanID 'Unsafe) :> CallbackAPI AnyError AnyEvent AnyOutput
 
