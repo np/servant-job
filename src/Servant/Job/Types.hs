@@ -153,10 +153,30 @@ instance FromJSON output => FromJSON (JobOutput output) where
 
 type JobID safety = ID safety "job"
 
+-- some states to help:
+-- https://docs.celeryproject.org/en/latest/reference/celery.states.html#misc
+data States = IsPending
+            | IsReceived
+            | IsStarted
+            | IsRunning
+            | IsKilled
+            | IsFailure
+            -- | IsRevoked
+            -- | IsRetry
+            | IsFinished
+  deriving (Eq, Generic)
+
+instance ToJSON States
+instance FromJSON States
+
+instance ToSchema States where
+  declareNamedSchema = genericDeclareNamedSchema $ swaggerOptions ""
+
+
 data JobStatus safety event = JobStatus
   { _job_id     :: !(JobID safety)
   , _job_log    :: ![event]
-  , _job_status :: !Text -- TODO: should be a type Started | Finished ...
+  , _job_status :: !States -- TODO: should be a type Started | Finished ...
   }
   deriving Generic
 

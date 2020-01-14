@@ -319,7 +319,7 @@ killRunningJobs = do
     pure $ new `Set.difference` jobs
 
 isFinishedJob :: JobStatus 'Unsafe event -> Bool
-isFinishedJob status = status ^. job_status == "finished"
+isFinishedJob status = status ^. job_status == IsFinished
 
 fillLog :: (ToJSON event, FromJSON event, ToJSON input, FromJSON output, M m)
         => JobServerURL event input output -> RunningJob event input output -> Offset -> m ()
