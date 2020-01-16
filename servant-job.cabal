@@ -4,7 +4,7 @@ cabal-version: 1.12
 --
 -- see: https://github.com/sol/hpack
 --
--- hash: 2621a9af2aa12903df9200e869dddb57f2620c0ae3e76227c88a5235149abcd5
+-- hash: 8bf7d10d6bf9901c55e78a625f6e4b0277ae8adc1cbdba5931d122ff64749449
 
 name:           servant-job
 version:        0.2.0.0
@@ -45,12 +45,16 @@ library
     , base >=4.7 && <5
     , bytestring
     , containers
+    , deepseq
     , http-api-data
     , http-client
+    , kan-extensions
     , lens
     , mtl
+    , scientific
     , servant >=0.16
     , servant-client >=0.16
+    , servant-client-core >=0.16
     , servant-flatten
     , servant-server >=0.16
     , servant-swagger >=1.1.5
@@ -75,12 +79,16 @@ executable servant-job-calc-example
     , base >=4.7 && <5
     , bytestring
     , containers
+    , deepseq
     , http-api-data
     , http-client
+    , kan-extensions
     , lens
     , mtl
+    , scientific
     , servant >=0.16
     , servant-client >=0.16
+    , servant-client-core >=0.16
     , servant-flatten
     , servant-job
     , servant-server >=0.16
@@ -108,13 +116,17 @@ executable servant-job-scrapy-example
     , base >=4.7 && <5
     , bytestring
     , containers
+    , deepseq
     , http-api-data
     , http-client
     , http-client-tls
+    , kan-extensions
     , lens
     , mtl
+    , scientific
     , servant >=0.16
     , servant-client >=0.16
+    , servant-client-core >=0.16
     , servant-flatten
     , servant-job
     , servant-server >=0.16

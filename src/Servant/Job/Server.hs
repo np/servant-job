@@ -34,7 +34,6 @@ import Control.Concurrent.Chan
 import Control.Concurrent.MVar (newMVar)
 import Control.Lens
 import Control.Monad.IO.Class
-import Control.Monad.Except
 import Control.Monad.Reader
 import Data.Aeson
 import qualified Data.Set as Set

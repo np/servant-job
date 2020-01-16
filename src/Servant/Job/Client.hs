@@ -33,7 +33,7 @@ module Servant.Job.Client
 
   , URL(..)
   , mkURL
-  , JobServerAPI(..)
+  , APIMode(..)
   , JobServerURL(..)
 
   , CallbackJobsAPI
@@ -56,6 +56,7 @@ module Servant.Job.Client
   -- Internals
   , MonadClientJob
   , clientSyncJob
+  , clientStreamJob
   , clientAsyncJob
   , clientCallbackJob'
   , clientCallbackJob
@@ -85,32 +86,43 @@ module Servant.Job.Client
 import Control.Concurrent.Chan
 import Control.Concurrent.MVar (readMVar, modifyMVar_)
 import Control.Concurrent (threadDelay)
+import Control.DeepSeq (NFData)
 import Control.Lens
 import Control.Monad
 import Control.Monad.IO.Class
 import Control.Monad.Reader
 import Control.Monad.Except
-import Data.Aeson
+import Data.Aeson hiding (Error)
 import qualified Data.Aeson.Types as Aeson
 import Data.Set (Set)
 import qualified Data.Set as Set
+import GHC.Generics hiding (to)
 import Servant
 import Servant.API.Flatten
 import qualified Servant.Job.Core as Core
 import Servant.Job.Core
 import Servant.Job.Utils
 import Servant.Job.Types
--- import Servant.Client (ClientM, ClientError, client) -- hiding (manager, ClientEnv)
-import Servant.Client.Streaming (ClientM, ClientError, client) -- hiding (manager, ClientEnv)
--- import qualified Servant.Client as SC
+import Servant.Client.Core
+import qualified Servant.Client as C
 import qualified Servant.Client.Streaming as SC
+import qualified Servant.Client.Internal.HttpClient.Streaming as SIC
+import Servant.Types.SourceT
 
 asyncJobsAPI :: proxy event input output
              -> Proxy (Flat (AsyncJobsAPI' 'Unsafe 'Unsafe '[JSON] '[JSON] NoCallbacks event input output))
 asyncJobsAPI _ = Proxy
 
+type CallJobC event input output =
+  ( ToJSON   input
+  , ToJSON   event
+  , FromJSON event
+  , FromJSON output
+  , NFData   output
+  )
+
 class Monad m => MonadJob m where
-  callJob :: (ToJSON event, FromJSON event, ToJSON input, FromJSON output)
+  callJob :: CallJobC event input output
           => JobServerURL event input output -> input -> m output
 
 data ClientJobError
@@ -125,10 +137,12 @@ data ClientJobError
   | CallbackError    ClientError
 
   -- Show instance is used by `error` which is bad.
-  deriving Show
+  deriving (Show, Generic)
+
+instance NFData ClientJobError
 
 runningJob :: JobServerURL event input output -> JobID 'Unsafe -> RunningJob event input output
-runningJob jurl jid = PrivateRunningJob (jurl ^. job_server_url) (jurl ^. job_server_api) jid
+runningJob jurl jid = PrivateRunningJob (jurl ^. job_server_url) (jurl ^. job_server_mode) jid
 
 forwardInnerEvents :: FromJSON event => (event -> IO ()) -> LogEvent -> LogEvent
 forwardInnerEvents log_value (LogEvent log_event) = LogEvent $ \event -> do
@@ -164,15 +178,20 @@ progress event = do
   log_event <- view cenv_log_event
   liftIO $ unLogEvent log_event event
 
-runClientJob :: M m => URL -> (ClientError -> ClientJobError) -> ClientM a -> m a
-runClientJob = undefined
-{- TODO STREAMING
+runClientJob :: M m => URL -> (ClientError -> ClientJobError) -> C.ClientM a -> m a
 runClientJob url err m = do
   env <- ask
-  let cenv = SC.ClientEnv (env ^. cenv_manager) (url ^. base_url) Nothing
-  liftIO (runClientM m cenv)
+  let cenv = C.ClientEnv (env ^. cenv_manager) (url ^. base_url) Nothing
+  liftIO (C.runClientM m cenv)
     >>= either (throwError . err) pure
--}
+
+runClientJobStreaming :: (M m, NFData a) => URL -> (ClientError -> ClientJobError)
+                      -> SC.ClientM a -> m a
+runClientJobStreaming url err m = do
+  env <- ask
+  let cenv = SC.ClientEnv (env ^. cenv_manager) (url ^. base_url) Nothing
+  liftIO (SC.runClientM m cenv)
+    >>= either (throwError . err) pure
 
 onRunningJob :: M m => RunningJob event input output
                     -> (forall a. Ord a => a -> Endom (Set a))
@@ -185,30 +204,29 @@ forgetRunningJob :: RunningJob event input output -> RunningJob event' input' ou
 forgetRunningJob (PrivateRunningJob u a i) = PrivateRunningJob u a i
 
 clientSyncJob :: (ToJSON input, ToJSON event, FromJSON event, FromJSON output, M m)
-              => Bool -> JobServerURL event input output -> input -> m (JobOutput output)
-clientSyncJob streamMode jurl input = do
-  undefined
-{- TODO STREAMING
-  let clientStream = client (syncJobsAPIClient jurl) streamMode input
-  ResultStream k <- runClientJob (jurl ^. job_server_url) StartingJobError $
-                      clientStream
+              => JobServerURL event input output -> input -> m (JobOutput output)
+clientSyncJob jurl =
+  runClientJob (jurl ^. job_server_url) StartingJobError .
+    C.client (proxySyncJobsAPI jurl)
+
+clientStreamJob :: (CallJobC event input output, M m)
+                => JobServerURL event input output -> input -> m (JobOutput output)
+clientStreamJob jurl input = do
   LogEvent log_event <- view cenv_log_event
-  res <- liftIO . k $ \getResult ->
+  out <- runClientJobStreaming (jurl ^. job_server_url) StartingJobError $ do
+    src <- SIC.client (proxyStreamJobsAPI jurl) input
     let
-      onFrame (Left err) = return (Left (FrameError err))
-      onFrame (Right (JobFrame me mo)) = do
-        forM_ me $ log_event . Event jurl Nothing
-        case mo of
-          Nothing -> loop
-          Just o  -> return (Right (JobOutput o))
-      loop = do
-        r <- getResult
-        case r of
-          Nothing -> return (Left MissingOutputError)
-          Just x  -> onFrame x
-    in loop
-  either throwError pure res
--}
+      go Stop = pure $ Left MissingOutputError
+      go (Yield (JobFrame me mo) s) = do
+            forM_ me $ log_event . Event jurl Nothing
+            case mo of
+              Nothing -> go s
+              Just o  -> pure $ Right $ JobOutput o
+      go (Skip s) = go s
+      go (Error e) = pure $ Left $ FrameError e
+      go (Effect m) = go =<< m
+    liftIO $ unSourceT src go
+  either throwError pure out
 
 newEventChan :: (FromJSON error, FromJSON event, FromJSON output, M m)
              => m (ChanID 'Safe, IO (Either String (ChanMessage error event input output)))
@@ -225,7 +243,7 @@ callbackJobsAPI _ = Proxy
 
 clientCallbackJob' :: (ToJSON event, FromJSON event, FromJSON output, M m)
                    => JobServerURL event input output
-                   -> (URL -> ClientM ())
+                   -> (URL -> C.ClientM ())
                    -> m (JobOutput output)
 clientCallbackJob' jurl inner = do
   (chanID, readNextEvent) <- newEventChan
@@ -255,18 +273,18 @@ clientCallbackJob' jurl inner = do
 
 clientCallbackJob :: (ToJSON input, ToJSON event, FromJSON event, FromJSON output, M m)
                   => JobServerURL event input output -> input -> m (JobOutput output)
-clientCallbackJob jurl input = do
-  clientCallbackJob' jurl (client (callbackJobsAPI jurl) . CallbackInput input)
+clientCallbackJob jurl input =
+  clientCallbackJob' jurl $ C.client (callbackJobsAPI jurl) . CallbackInput input
 
 clientMCallback :: (ToJSON error, ToJSON event, ToJSON output)
-                => ChanMessage error event input output -> ClientM ()
+                => ChanMessage error event input output -> C.ClientM ()
 clientMCallback msg = do
   forM_ (msg ^. msg_event)  cli_event
   forM_ (msg ^. msg_error)  cli_error
-  forM_ (msg ^. msg_result) (cli_result . JobOutput)
+  forM_ (msg ^. msg_result) cli_result
   where
     (cli_event :<|> cli_error :<|> cli_result) =
-        client (Proxy :: Proxy (CallbackAPI error event output))
+        C.client (Proxy :: Proxy (CallbackAPI error event output))
 
 clientCallback :: (ToJSON error, ToJSON event, ToJSON output, M m)
                => URL -> ChanMessage error event input output -> m ()
@@ -276,7 +294,7 @@ clientNewJob :: (ToJSON input, FromJSON event, FromJSON output, M m)
              => JobServerURL event input output -> JobInput NoCallbacks input -> m (JobStatus 'Unsafe event)
 clientNewJob jurl = runClientJob (jurl ^. job_server_url) StartingJobError . newJobClient
   where
-    newJobClient :<|> _ :<|> _ :<|> _ = client $ asyncJobsAPI jurl
+    _ :<|> newJobClient :<|> _ :<|> _ :<|> _ = C.client $ asyncJobsAPI jurl
 
 clientWaitJob :: (ToJSON input, FromJSON event, FromJSON output, M m)
               => RunningJob event input output -> m output
@@ -285,7 +303,7 @@ clientWaitJob job =
   where
     jurl = job ^. running_job_url
     jid  = job ^. running_job_id . to forgetID
-    _ :<|> _ :<|> _ :<|> waitJobClient = client $ asyncJobsAPI job
+    _ :<|> _ :<|> _ :<|> _ :<|> waitJobClient = C.client $ asyncJobsAPI job
 
 clientKillJob :: (ToJSON input, FromJSON event, FromJSON output, M m)
               => RunningJob event input output
@@ -295,7 +313,7 @@ clientKillJob job limit offset =
   where
     jurl = job ^. running_job_url
     jid  = job ^. running_job_id
-    _ :<|> killJobClient :<|> _ :<|> _ = client $ asyncJobsAPI job
+    _ :<|> _ :<|> killJobClient :<|> _ :<|> _ = C.client $ asyncJobsAPI job
 
 clientPollJob :: (ToJSON input, FromJSON event, FromJSON output, M m)
               => RunningJob event input output -> Maybe Limit -> Maybe Offset -> m (JobStatus 'Unsafe event)
@@ -304,7 +322,7 @@ clientPollJob job limit offset =
   where
     jurl = job ^. running_job_url
     jid  = job ^. running_job_id
-    _ :<|> _ :<|> clientMPollJob :<|> _ = client $ asyncJobsAPI job
+    _ :<|> _ :<|> _ :<|> clientMPollJob :<|> _ = C.client $ asyncJobsAPI job
 
 -- NOTES:
 -- * retryOnTransientFailure ?
@@ -352,18 +370,17 @@ clientAsyncJob jurl i = do
   onRunningJob job Set.delete
   pure out
 
-callJobM :: (FromJSON output, FromJSON event, ToJSON input, ToJSON event, M m)
+callJobM :: (CallJobC event input output, M m)
          => JobServerURL event input output -> input -> m output
 callJobM jurl input = do
   progress $ NewTask jurl
-  case jurl ^. job_server_api of
+  case jurl ^. job_server_mode of
     Async    -> clientAsyncJob jurl input
-    Sync     -> wrap $ clientSyncJob streamMode
+    Sync     -> wrap clientSyncJob
+    Stream   -> wrap clientStreamJob
     Callback -> wrap clientCallbackJob
 
   where
-    -- TODO we should have a way to control streaming
-    streamMode = False
     wrap f = do
       out <- view job_output <$> retryOnTransientFailure (f jurl input)
       progress $ Finished jurl Nothing

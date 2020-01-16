@@ -12,6 +12,7 @@
 {-# LANGUAGE TypeOperators #-}
 {-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE TypeFamilies #-}
+{-# OPTIONS -fno-warn-orphans #-}
 module Servant.Job.Async
   -- Essentials
   ( AsyncJobAPI
@@ -20,6 +21,7 @@ module Servant.Job.Async
   , AsyncJobsAPI'
   , AsyncJobsServer
   , MonadAsyncJobs
+  , MonadAsyncJobs'
 
   , JobID
   , JobStatus
@@ -35,6 +37,7 @@ module Servant.Job.Async
   , job_output
 
   , JobFunction(JobFunction)
+  , jobFunction
   , SimpleJobFunction
   , simpleJobFunction
   , ioJobFunction
@@ -42,6 +45,8 @@ module Servant.Job.Async
   , newIOJob
 
   , JobEnv
+  , jenv_jobs
+  , jenv_manager
   , HasJobEnv(job_env)
   , defaultDuration
   , newJobEnv
@@ -80,8 +85,8 @@ import Control.Applicative
 import Control.Concurrent (threadDelay)
 import Control.Concurrent.Async (Async, async, waitCatch, poll, cancel)
 import Control.Concurrent.MVar (MVar, newMVar, readMVar, modifyMVar_)
-import Control.Exception.Base (Exception, SomeException(SomeException), throwIO)
-import Control.Lens
+import Control.Exception.Base (Exception, throwIO)
+import Control.Lens hiding (transform)
 import Control.Monad
 import Control.Monad.IO.Class
 import Control.Monad.Except
@@ -97,13 +102,11 @@ import GHC.Generics hiding (to)
 import Network.HTTP.Client hiding (Proxy, path)
 import Prelude hiding (log)
 import Servant
-import Servant.API.Flatten
 import Servant.Job.Client (clientMCallback)
 import Servant.Job.Types
 import Servant.Job.Core
 import Servant.Job.Utils (jsonOptions)
-import Servant.Client hiding (manager, ClientEnv)
-import qualified Servant.Client as S
+import qualified Servant.Client as C
 
 data Job event a = Job
   { _job_async   :: !(Async a)
@@ -139,6 +142,12 @@ type MonadAsyncJobs env err event output m =
   , Exception err
   , ToJSON event
   , ToJSON output
+  , ToJSON err
+  )
+
+type MonadAsyncJobs' callbacks env err event output m =
+  ( MonadAsyncJobs env err event output m
+  , Traversable callbacks
   )
 
 newJobEnv :: EnvSettings -> Manager -> IO (JobEnv event output)
@@ -192,15 +201,27 @@ simpleJobFunction :: (input -> (event -> IO ()) -> IO output)
                   -> SimpleJobFunction event input output
 simpleJobFunction f = JobFunction (\i log -> liftIO (f i log))
 
-newJob :: forall env err event input output m callbacks
-        . ( MonadAsyncJobs env err event output m
-          , Traversable callbacks
-          )
+newJob :: forall callbacks env err event input output m
+        . MonadAsyncJobs' callbacks env err event output m
        => JobFunction env err event input output
        -> JobInput callbacks input -> m (JobStatus 'Safe event)
 newJob task i = do
   env <- ask
-  let jenv = env ^. job_env
+  let
+    jenv = env ^. job_env
+
+    postCallback :: ChanMessage err event input output -> IO ()
+    postCallback m =
+      forM_ (i ^. job_callback) $ \url ->
+        liftIO (C.runClientM (clientMCallback m)
+                (C.ClientEnv (jenv ^. jenv_manager)
+                             (url ^. base_url) Nothing))
+
+    pushLog :: MVar [event] -> event -> IO ()
+    pushLog m e = do
+      postCallback $ mkChanEvent e
+      modifyMVar_ m (pure . (e :))
+
   liftIO $ do
     log <- newMVar []
     let mkJob = async $ do
@@ -215,20 +236,6 @@ newJob task i = do
     pure $ JobStatus jid [] IsRunning
 
   where
-    postCallback :: ChanMessage error event input output -> IO ()
-    postCallback m =
-      forM_ (i ^. job_callback) $ \url ->
-        undefined
-        {-
-        liftIO (runClientM (clientMCallback m)
-                (S.ClientEnv (jenv ^. jenv_manager)
-                             (url ^. base_url) Nothing))
-        -}
-    pushLog :: MVar [event] -> event -> IO ()
-    pushLog m e = do
-      postCallback $ mkChanEvent e
-      modifyMVar_ m (pure . (e :))
-
     readLog :: MVar [event] -> IO [event]
     readLog = readMVar
 
@@ -295,12 +302,13 @@ waitJob alsoDeleteJob jid job = do
   where
     err e = serverError $ err500 { errBody = LBS.pack $ show e }
 
-serveJobsAPI :: forall env err m event input output ctI ctO
-              . MonadAsyncJobs env err event output m
+serveJobsAPI :: forall callbacks env err m event input output ctI ctO
+              . MonadAsyncJobs' callbacks env err event output m
              => JobFunction env err event input output
-             -> AsyncJobsServerT' ctI ctO NoCallbacks event input output m
+             -> AsyncJobsServerT' ctI ctO callbacks event input output m
 serveJobsAPI f
-    =  newJob f
+    =  newJob f (JobInput undefined Nothing)
+  :<|> newJob f
   :<|> wrap' killJob
   :<|> wrap' pollJob
   :<|> (wrap . waitJob) False
@@ -313,6 +321,9 @@ serveJobsAPI f
       g jid job
 
     wrap' g jid' limit offset = wrap (g limit offset) jid'
+
+instance ToJSON ServerError where
+  toJSON = toJSON . show
 
 -- `serveJobsAPI` specialized to the `Handler` monad.
 simpleServeJobsAPI :: forall event input output.

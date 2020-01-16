@@ -15,11 +15,12 @@
 {-# OPTIONS -fno-warn-orphans #-}
 module Servant.Job.Utils ( module Servant.Job.Utils, trace ) where
 
-import Control.Concurrent.MVar (newMVar, takeMVar, putMVar)
-import Data.Aeson
-import Data.Aeson.Types
+import Control.Concurrent (forkFinally)
+import Control.Concurrent.MVar (newEmptyMVar, takeMVar, putMVar)
+import Control.Monad.IO.Class
+import Data.Aeson hiding (Error)
+import Data.Aeson.Types hiding (Error)
 import Data.Maybe
-import Data.Monoid
 import Data.Swagger
 import Data.Text (Text)
 import qualified Data.Text as T
@@ -76,21 +77,26 @@ infixr 4 ?!
 (?!) :: Maybe a -> String -> a
 (?!) ma msg = ma ?| error msg
 
-{-
-simpleStreamGeneratorIO :: ((a -> IO ()) -> IO ()) -> SourceT IO a
-simpleStreamGeneratorIO k = SourceT $ \k' ->
-  k' $ \
-  k $ \a ->
--}
--- TODO STREAMING
-simpleStreamGenerator :: ((a -> IO ()) -> IO ()) -> SourceT m a
-simpleStreamGenerator = undefined
-{-
+data StepA a = StopA
+             | YieldA a
+             | ErrorA String
+          -- | SkipA
+          -- not yet needed
+
+fromActionStepA :: Functor m => m (StepA a) -> StepT m a
+fromActionStepA action = loop where
+    loop = Effect $ step <$> action
+    step StopA      = Stop
+    step (ErrorA s) = Error s
+  --step SkipA      = Skip loop
+    step (YieldA a) = Yield a loop
+
+simpleStreamGenerator :: MonadIO m => ((a -> IO ()) -> IO ()) -> SourceT m a
 simpleStreamGenerator k = SourceT $ \k' -> do
-  v <- newMVar emit1
-  k $ \a -> do
-    s <- takeMVar v
-    putMVar v (Yield a s)
-  s <- takeMVar v
-  k' s
--}
+  v <- liftIO $ newEmptyMVar
+  let
+    act = do k (putMVar v . YieldA)
+             putMVar v StopA
+    and_then = either (putMVar v . ErrorA . show) pure
+  _ <- liftIO $ forkFinally act and_then
+  k' . fromActionStepA . liftIO $ takeMVar v

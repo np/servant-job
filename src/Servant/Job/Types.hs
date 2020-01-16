@@ -13,6 +13,7 @@ module Servant.Job.Types where
 import Control.Applicative
 import Control.Concurrent.Chan
 import Control.Concurrent.MVar (MVar)
+import Control.DeepSeq (NFData)
 import Control.Lens
 import Control.Exception hiding (Handler)
 import Control.Monad.Except
@@ -28,25 +29,29 @@ import Network.HTTP.Client hiding (Proxy, path)
 import Prelude hiding (log)
 import Servant
 import Servant.API.Flatten
+import Servant.Client hiding (manager, ClientEnv)
 import Servant.Job.Core as Core
 import Servant.Job.Utils (jsonOptions, swaggerOptions, (</>))
-import Servant.Client hiding (manager, ClientEnv)
+import Servant.Types.SourceT (SourceT)
 import Web.FormUrlEncoded
 
 -- | Flavor: type of server to use
-data JobServerAPI = Sync | Async | Callback
+data APIMode = Sync | Stream | Async | Callback
   deriving (Eq, Ord, Generic)
 
-instance ToJSON JobServerAPI
+instance ToJSON   APIMode
+instance ToSchema APIMode
 
-instance FromHttpApiData JobServerAPI where
+instance FromHttpApiData APIMode where
   parseUrlPiece "sync"     = pure Sync
+  parseUrlPiece "stream"   = pure Stream
   parseUrlPiece "async"    = pure Async
   parseUrlPiece "callback" = pure Callback
-  parseUrlPiece _          = Left "Unexpected value of type JobServerAPI. Expecting sync, async, or callback"
+  parseUrlPiece _          = Left "Unexpected value of type APIMode. Expecting sync, async, or callback"
 
-instance ToHttpApiData JobServerAPI where
+instance ToHttpApiData APIMode where
   toUrlPiece Sync     = "sync"
+  toUrlPiece Stream   = "stream"
   toUrlPiece Async    = "async"
   toUrlPiece Callback = "callback"
 
@@ -77,8 +82,8 @@ mkURL :: BaseUrl -> String -> URL
 mkURL url path = URL $ url { baseUrlPath = baseUrlPath url </> path }
 
 data JobServerURL event input output = JobServerURL
-  { _job_server_url :: !URL
-  , _job_server_api :: !JobServerAPI
+  { _job_server_url  :: !URL
+  , _job_server_mode :: !APIMode
   }
   deriving (Eq, Ord, Generic)
 
@@ -114,6 +119,11 @@ instance Alternative NoCallbacks where
   empty = NoCallbacks
   _ <|> _ = NoCallbacks
 
+instance ToSchema (NoCallbacks a) where
+  declareNamedSchema _ = pure $ NamedSchema (Just "NoCallbacks") $ mempty
+    & type_ ?~ SwaggerNull
+    & description ?~ "Only the `null` value."
+
 data JobInput f a = JobInput
   { _job_input    :: !a
   , _job_callback :: !(f URL)
@@ -126,8 +136,21 @@ instance (ToJSON (f URL), ToJSON input) => ToJSON (JobInput f input) where
   toJSON = genericToJSON $ jsonOptions "_job_"
 
 instance (FromJSON (f URL), FromJSON input, Alternative f) => FromJSON (JobInput f input) where
-  parseJSON v =  genericParseJSON (jsonOptions "_job_") v
+  parseJSON v =  parseJobInput v
              <|> JobInput <$> parseJSON v <*> pure empty
+             -- TODO improve parsing errors
+    where
+      parseJobInput (Object o) = JobInput <$> o .:  "input"
+                                          <*> o .:? "callback" .!= empty
+      parseJobInput _ = empty
+
+instance ToForm input => ToForm (JobInput NoCallbacks input) where
+  toForm i = toForm (i ^. job_input)
+
+instance FromForm input => FromForm (JobInput NoCallbacks input) where
+  fromForm f =
+    JobInput <$> fromForm (Form (H.delete "input" (unForm f)))
+             <*> pure NoCallbacks
 
 instance ToForm input => ToForm (JobInput Maybe input) where
   toForm i =
@@ -138,6 +161,10 @@ instance FromForm input => FromForm (JobInput Maybe input) where
   fromForm f =
     JobInput <$> fromForm (Form (H.delete "input" (unForm f)))
              <*> parseMaybe "callback" f
+
+instance (ToSchema (f URL), ToSchema a) => ToSchema (JobInput f a) where
+  declareNamedSchema = genericDeclareNamedSchema (swaggerOptions "_job_") &
+    mapped . mapped . schema . required .~ ["input"]
 
 newtype JobOutput a = JobOutput
   { _job_output :: a }
@@ -150,6 +177,11 @@ instance ToJSON output => ToJSON (JobOutput output) where
 
 instance FromJSON output => FromJSON (JobOutput output) where
   parseJSON = genericParseJSON $ jsonOptions "_job_"
+
+instance ToSchema a => ToSchema (JobOutput a) where
+  declareNamedSchema = genericDeclareNamedSchema $ swaggerOptions "_job_"
+
+instance NFData a => NFData (JobOutput a)
 
 type JobID safety = ID safety "job"
 
@@ -194,20 +226,21 @@ type AsyncJobAPI' safetyO ctO event output
   :<|> "wait" :> Get ctO (JobOutput output)
 
 type AsyncJobsAPI' safetyI safetyO ctI ctO callbacks event input output
-    =  ReqBody ctI (JobInput callbacks input) :> Post '[JSON] (JobStatus safetyO event)
+    =  "nobody" :> Post '[JSON] (JobStatus safetyO event)
+  :<|> ReqBody ctI (JobInput callbacks input) :> Post '[JSON] (JobStatus safetyO event)
   :<|> Capture "id" (JobID safetyI) :> AsyncJobAPI' safetyO ctO event output
 
 type AsyncJobAPI event output = AsyncJobAPI' 'Safe '[JSON] event output
 
 type AsyncJobsAPI event input output =
-  Flat (AsyncJobsAPI' 'Unsafe 'Safe '[JSON] '[JSON] NoCallbacks event input output)
+  Flat (AsyncJobsAPI' 'Unsafe 'Safe '[JSON] '[JSON] Maybe event input output)
 
 type AsyncJobsServerT' ctI ctO callbacks event input output m =
   ServerT (Flat (AsyncJobsAPI' 'Unsafe 'Safe ctI ctO callbacks event input output)) m
 
-type AsyncJobsServerT event input output m = AsyncJobsServerT' '[JSON] '[JSON] NoCallbacks event input output m
+type AsyncJobsServerT event input output m = AsyncJobsServerT' '[JSON] '[JSON] Maybe event input output m
 
-type AsyncJobsServer' ctI ctO event input output = AsyncJobsServerT' ctI ctO NoCallbacks event input output Handler
+type AsyncJobsServer' ctI ctO callbacks event input output = AsyncJobsServerT' ctI ctO callbacks event input output Handler
 
 type AsyncJobsServer event input output = AsyncJobsServerT event input output Handler
 
@@ -222,6 +255,15 @@ instance (safety ~ 'Unsafe, FromJSON event) => FromJSON (JobStatus safety event)
 instance ToSchema event => ToSchema (JobStatus safety event) where
   declareNamedSchema = genericDeclareNamedSchema $ swaggerOptions "_job_"
 
+type SyncJobsAPI' ctI ctO input output =
+  ReqBody ctI input :>
+  Post ctO (JobOutput output)
+
+type SyncJobsAPI input output = SyncJobsAPI' '[JSON] '[JSON] input output
+
+proxySyncJobsAPI :: proxy input output -> Proxy (SyncJobsAPI input output)
+proxySyncJobsAPI _ = Proxy
+
 data JobFrame event output = JobFrame
   { _job_frame_event  :: Maybe event
   , _job_frame_output :: Maybe output
@@ -234,21 +276,15 @@ instance (FromJSON event, FromJSON output) => FromJSON (JobFrame event output) w
 instance (ToJSON event, ToJSON output) => ToJSON (JobFrame event output) where
   toJSON = genericToJSON $ jsonOptions "_job_frame_"
 
-type StreamJobsAPI' f ctI ctO event input output =
+type StreamJobsAPI' m ctI ctO event input output =
   ReqBody ctI input :>
-      StreamPost NewlineFraming ctO (f (JobFrame event output))
+  StreamPost NewlineFraming ctO (SourceT m (JobFrame event output))
 
 type StreamJobsAPI event input output =
-  StreamJobsAPI' SourceIO '[JSON, FormUrlEncoded] JSON event input output
+  StreamJobsAPI' IO '[JSON, FormUrlEncoded] JSON event input output
 
-type SyncJobsAPI' f ctI ctO event input output =
-  QueryFlag "stream" :> StreamJobsAPI' f ctI ctO event input output
--- Post '[ctO] (JobOutput output)
-
-type SyncJobsAPI event input output = SyncJobsAPI' SourceIO '[JSON] JSON event input output
-
-syncJobsAPIClient :: proxy event input output -> Proxy (SyncJobsAPI event input output)
-syncJobsAPIClient _ = Proxy
+proxyStreamJobsAPI :: proxy event input output -> Proxy (StreamJobsAPI event input output)
+proxyStreamJobsAPI _ = Proxy
 
 type ChanID safety = ID safety "chan"
 
@@ -265,6 +301,26 @@ newtype AnyInput  = AnyInput  Value
   deriving (FromJSON, ToJSON)
 newtype AnyOutput = AnyOutput Value
   deriving (FromJSON, ToJSON)
+
+instance ToSchema AnyOutput where
+  declareNamedSchema _ = pure $ NamedSchema (Just "AnyOutput") $ mempty
+    & description ?~ "Arbitrary JSON value."
+    & additionalProperties ?~ AdditionalPropertiesAllowed True
+
+instance ToSchema AnyInput where
+  declareNamedSchema _ = pure $ NamedSchema (Just "AnyInput") $ mempty
+    & description ?~ "Arbitrary JSON value."
+    & additionalProperties ?~ AdditionalPropertiesAllowed True
+
+instance ToSchema AnyEvent where
+  declareNamedSchema _ = pure $ NamedSchema (Just "AnyEvent") $ mempty
+    & description ?~ "Arbitrary JSON value."
+    & additionalProperties ?~ AdditionalPropertiesAllowed True
+
+instance ToSchema AnyError where
+  declareNamedSchema _ = pure $ NamedSchema (Just "AnyError") $ mempty
+    & description ?~ "Arbitrary JSON value."
+    & additionalProperties ?~ AdditionalPropertiesAllowed True
 
 type CallbacksAPI = Capture "id" (ChanID 'Unsafe) :> CallbackAPI AnyError AnyEvent AnyOutput
 
@@ -303,14 +359,15 @@ type CallbackJobsAPI' ctI ctO event input output =
 type CallbackJobsAPI event input output =
   CallbackJobsAPI' '[JSON, FormUrlEncoded] '[JSON] event input output
 
-type family   JobsAPI' (sas :: JobServerAPI)
+type family   JobsAPI' (mode :: APIMode)
                        (ctI :: [*]) ctO event input output
-type instance JobsAPI' 'Sync     ctI ctO event input output = SyncJobsAPI' SourceIO ctI ctO event input output
-type instance JobsAPI' 'Async    ctI ctO event input output = AsyncJobsAPI' 'Unsafe 'Safe ctI '[ctO] NoCallbacks event input output
--- TODO provide also a version of Async with the callbacks
+type instance JobsAPI' 'Sync     ctI ctO event input output = SyncJobsAPI' ctI '[ctO] input output
+type instance JobsAPI' 'Stream   ctI ctO event input output = StreamJobsAPI' IO ctI ctO event input output
+type instance JobsAPI' 'Async    ctI ctO event input output = AsyncJobsAPI' 'Unsafe 'Safe ctI '[ctO] Maybe event input output
+-- TODO provide also a version of Async without the callbacks
 type instance JobsAPI' 'Callback ctI ctO event input output = CallbackJobsAPI' ctI '[ctO] event input output
 
-type JobsAPI sas ctI ctO event input output = Flat (JobsAPI' sas ctI ctO event input output)
+type JobsAPI mode ctI ctO event input output = Flat (JobsAPI' mode ctI ctO event input output)
 
 data ChanMessage error event input output = ChanMessage
   { _msg_event  :: !(Maybe event)
@@ -357,7 +414,7 @@ makeLenses ''Chans
 
 data RunningJob event input output = PrivateRunningJob
   { _running_job_url :: URL
-  , _running_job_api :: JobServerAPI
+  , _running_job_api :: APIMode
   , _running_job_id  :: JobID 'Unsafe
   }
   deriving (Eq, Ord, Generic)

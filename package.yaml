@@ -21,13 +21,17 @@ dependencies:
 - base >= 4.7 && < 5
 - bytestring
 - containers
+- deepseq
 - http-api-data
 - http-client
+- kan-extensions
 - lens
 - mtl
 - SHA
+- scientific
 - servant >= 0.16
 - servant-flatten
+- servant-client-core >= 0.16
 - servant-client >= 0.16
 - servant-server >= 0.16
 - servant-swagger >= 1.1.5
