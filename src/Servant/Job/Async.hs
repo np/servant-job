@@ -309,7 +309,8 @@ serveJobsAPI :: forall callbacks env err m event input output ctI ctO
              => JobFunction env err event input output
              -> AsyncJobsServerT' ctI ctO callbacks event input output m
 serveJobsAPI f
-    =  newJob f
+    =  newJob f (JobInput undefined Nothing)
+  :<|> newJob f
   :<|> wrap' killJob
   :<|> wrap' pollJob
   :<|> (wrap . waitJob) False

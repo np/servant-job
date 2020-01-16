@@ -206,7 +206,8 @@ type AsyncJobAPI' safetyO ctO event output
   :<|> "wait" :> Get ctO (JobOutput output)
 
 type AsyncJobsAPI' safetyI safetyO ctI ctO callbacks event input output
-    =  ReqBody ctI (JobInput callbacks input) :> Post '[JSON] (JobStatus safetyO event)
+    =  "nobody" :> Post '[JSON] (JobStatus safetyO event)
+  :<|> ReqBody ctI (JobInput callbacks input) :> Post '[JSON] (JobStatus safetyO event)
   :<|> Capture "id" (JobID safetyI) :> AsyncJobAPI' safetyO ctO event output
 
 type AsyncJobAPI event output = AsyncJobAPI' 'Safe '[JSON] event output

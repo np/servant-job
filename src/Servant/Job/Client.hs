@@ -294,7 +294,7 @@ clientNewJob :: (ToJSON input, FromJSON event, FromJSON output, M m)
              => JobServerURL event input output -> JobInput NoCallbacks input -> m (JobStatus 'Unsafe event)
 clientNewJob jurl = runClientJob (jurl ^. job_server_url) StartingJobError . newJobClient
   where
-    newJobClient :<|> _ :<|> _ :<|> _ = C.client $ asyncJobsAPI jurl
+    _ :<|> newJobClient :<|> _ :<|> _ :<|> _ = C.client $ asyncJobsAPI jurl
 
 clientWaitJob :: (ToJSON input, FromJSON event, FromJSON output, M m)
               => RunningJob event input output -> m output
@@ -303,7 +303,7 @@ clientWaitJob job =
   where
     jurl = job ^. running_job_url
     jid  = job ^. running_job_id . to forgetID
-    _ :<|> _ :<|> _ :<|> waitJobClient = C.client $ asyncJobsAPI job
+    _ :<|> _ :<|> _ :<|> _ :<|> waitJobClient = C.client $ asyncJobsAPI job
 
 clientKillJob :: (ToJSON input, FromJSON event, FromJSON output, M m)
               => RunningJob event input output
@@ -313,7 +313,7 @@ clientKillJob job limit offset =
   where
     jurl = job ^. running_job_url
     jid  = job ^. running_job_id
-    _ :<|> killJobClient :<|> _ :<|> _ = C.client $ asyncJobsAPI job
+    _ :<|> _ :<|> killJobClient :<|> _ :<|> _ = C.client $ asyncJobsAPI job
 
 clientPollJob :: (ToJSON input, FromJSON event, FromJSON output, M m)
               => RunningJob event input output -> Maybe Limit -> Maybe Offset -> m (JobStatus 'Unsafe event)
@@ -322,7 +322,7 @@ clientPollJob job limit offset =
   where
     jurl = job ^. running_job_url
     jid  = job ^. running_job_id
-    _ :<|> _ :<|> clientMPollJob :<|> _ = C.client $ asyncJobsAPI job
+    _ :<|> _ :<|> _ :<|> clientMPollJob :<|> _ = C.client $ asyncJobsAPI job
 
 -- NOTES:
 -- * retryOnTransientFailure ?
