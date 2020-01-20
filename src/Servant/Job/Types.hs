@@ -227,20 +227,29 @@ type AsyncJobAPI' safetyO ctO event output
 
 type AsyncJobsAPI' safetyI safetyO ctI ctO callbacks event input output
     =  "nobody" :> Post '[JSON] (JobStatus safetyO event)
-  :<|> ReqBody ctI (JobInput callbacks input) :> Post '[JSON] (JobStatus safetyO event)
-  :<|> Capture "id" (JobID safetyI) :> AsyncJobAPI' safetyO ctO event output
+
+  :<|> ReqBody ctI (JobInput callbacks input)
+    :> Post '[JSON] (JobStatus safetyO event)
+
+  :<|> Capture "id" (JobID safetyI)
+    :> AsyncJobAPI' safetyO ctO event output
 
 type AsyncJobAPI event output = AsyncJobAPI' 'Safe '[JSON] event output
 
 type AsyncJobsAPI event input output =
   Flat (AsyncJobsAPI' 'Unsafe 'Safe '[JSON] '[JSON] Maybe event input output)
 
+type AsyncJobsAPI2 event ctI input output =
+  Flat (AsyncJobsAPI' 'Unsafe 'Safe ctI '[JSON] Maybe event input output)
+
 type AsyncJobsServerT' ctI ctO callbacks event input output m =
   ServerT (Flat (AsyncJobsAPI' 'Unsafe 'Safe ctI ctO callbacks event input output)) m
 
-type AsyncJobsServerT event input output m = AsyncJobsServerT' '[JSON] '[JSON] Maybe event input output m
+type AsyncJobsServerT event input output m =
+  AsyncJobsServerT' '[JSON] '[JSON] Maybe event input output m
 
-type AsyncJobsServer' ctI ctO callbacks event input output = AsyncJobsServerT' ctI ctO callbacks event input output Handler
+type AsyncJobsServer' ctI ctO callbacks event input output =
+    AsyncJobsServerT' ctI ctO callbacks event input output Handler
 
 type AsyncJobsServer event input output = AsyncJobsServerT event input output Handler
 
