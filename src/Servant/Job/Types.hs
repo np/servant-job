@@ -188,9 +188,29 @@ type JobID safety = ID safety "job"
 data JobStatus safety event = JobStatus
   { _job_id     :: !(JobID safety)
   , _job_log    :: ![event]
-  , _job_status :: !Text -- TODO: should be a type Started | Finished ...
+  , _job_status :: !Status
   }
   deriving Generic
+
+data Status = SRunning | SFinished | SFailed | SKilled
+  deriving (Generic, Eq)
+instance Show Status where
+  show SRunning = "running"
+  show SFinished = "finished"
+  show SFailed   = "failed"
+  show SKilled = "killed"
+instance ToJSON Status where
+  toJSON = toJSON . show
+instance FromJSON Status where
+  parseJSON (String s) = pure $ case s of
+    "finished" -> SFinished
+    "failed"   -> SFailed
+    "killed"   -> SKilled
+    "running"  -> SRunning
+    _          -> error $ "unrecognized status " ++ (T.unpack s)
+  parseJSON _ = error "wring status type, should be text"
+instance ToSchema Status where
+  declareNamedSchema = genericDeclareNamedSchema $ swaggerOptions "_status"
 
 newtype Limit  = Limit  { unLimit  :: Int } deriving (ToHttpApiData, FromHttpApiData, Generic)
 newtype Offset = Offset { unOffset :: Int } deriving (ToHttpApiData, FromHttpApiData, Generic)
