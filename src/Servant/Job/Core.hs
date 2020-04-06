@@ -67,6 +67,8 @@ import Control.Monad
 import Control.Monad.IO.Class
 import Control.Monad.Except
 import Control.Monad.Reader
+import Control.Monad.Base (liftBase)
+import Control.Monad.Trans.Control (MonadBaseControl(..))
 import Data.Aeson
 import qualified Data.ByteString.Lazy.Char8 as LBS
 import Data.Digest.Pure.SHA (hmacSha256, showDigest)
@@ -136,9 +138,13 @@ serverError e = throwError $ _ServerError # e
 instance HasServerError ServerError where
   _ServerError = id
 
-type MonadServantJobErr err m = (MonadIO m, MonadError err m, HasServerError err)
+type MonadServantJobErr err m =
+  ( MonadBaseControl IO m
+  , MonadError err m
+  , HasServerError err
+  )
 type MonadServantJob env err a m =
-  ( MonadIO m
+  ( MonadBaseControl IO m
   , MonadReader env m
   , MonadError err m
   , HasServerError err
@@ -230,9 +236,9 @@ newEnv settings = do
 generateSecretKey :: IO SecretKey
 generateSecretKey = SecretKey <$> withBinaryFile "/dev/urandom" ReadMode (\h -> LBS.hGet h 16)
 
-deleteItem :: MonadIO m => Env a -> ID 'Safe k -> m ()
+deleteItem :: MonadBaseControl IO m => Env a -> ID 'Safe k -> m ()
 deleteItem env jid =
-  liftIO . modifyMVar_ (env ^. env_state_mvar) $ pure . (env_map . at (jid ^. id_number) .~ Nothing)
+  liftBase . modifyMVar_ (env ^. env_state_mvar) $ pure . (env_map . at (jid ^. id_number) .~ Nothing)
 
 isValidItem :: UTCTime -> EnvItem a -> Bool
 isValidItem now item = now < item ^. env_timeout
@@ -252,7 +258,7 @@ checkID :: (KnownSymbol k, k ~ SymbolOf a, MonadServantJob env err a m)
         => ID 'Unsafe k -> m (ID 'Safe k)
 checkID i@(PrivateID tn n t d) = do
   env <- view _env
-  now <- liftIO getCurrentTime
+  now <- liftBase getCurrentTime
   when (tn /= symbolVal i) $
     serverError $ err401 { errBody = "Invalid identifier type name" }
   when (now > addUTCTime (env ^. env_settings . env_duration) t) $
@@ -276,7 +282,7 @@ getItem :: (MonadServantJob env err a m, KnownSymbol k, k ~ SymbolOf a)
         => ID 'Safe k -> m (EnvItem a)
 getItem ident = do
   env <- view _env
-  m <- liftIO . readMVar $ env ^. env_state_mvar
+  m <- liftBase . readMVar $ env ^. env_state_mvar
   maybe notFound pure $ m ^. env_map . at (ident ^. id_number)
 
   where

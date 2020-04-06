@@ -12,6 +12,8 @@
 {-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE TypeOperators #-}
+{-# LANGUAGE MultiParamTypeClasses #-}
+
 module Servant.Job.Client
   ( JobsAPI
   , MonadJob
@@ -92,6 +94,8 @@ import Control.Monad
 import Control.Monad.IO.Class
 import Control.Monad.Reader
 import Control.Monad.Except
+import Control.Monad.Base (MonadBase, liftBase)
+import Control.Monad.Trans.Control (MonadBaseControl(..))
 import Data.Aeson hiding (Error)
 import qualified Data.Aeson.Types as Aeson
 import Data.Set (Set)
@@ -157,7 +161,7 @@ forwardInnerEvents log_value (LogEvent log_event) = LogEvent $ \event -> do
           log_event $ BadEvent s i v
     _ -> log_event event
 
-type MonadClientJob m = (MonadReader ClientEnv m, MonadError ClientJobError m, MonadIO m)
+type MonadClientJob m = (MonadReader ClientEnv m, MonadError ClientJobError m, MonadBaseControl IO m)
 type M m = MonadClientJob m
 
 -- TODO
@@ -173,16 +177,16 @@ retryOnTransientFailure m = m `catchError` f
     f e | isTransientFailure e = retryOnTransientFailure m
         | otherwise            = throwError e
 
-progress :: (ToJSON event, MonadReader ClientEnv m, MonadIO m) => Event event input output -> m ()
+progress :: (ToJSON event, MonadReader ClientEnv m, MonadBaseControl IO m) => Event event input output -> m ()
 progress event = do
   log_event <- view cenv_log_event
-  liftIO $ unLogEvent log_event event
+  liftBase $ unLogEvent log_event event
 
 runClientJob :: M m => URL -> (ClientError -> ClientJobError) -> C.ClientM a -> m a
 runClientJob url err m = do
   env <- ask
   let cenv = C.ClientEnv (env ^. cenv_manager) (url ^. base_url) Nothing
-  liftIO (C.runClientM m cenv)
+  liftBase (C.runClientM m cenv)
     >>= either (throwError . err) pure
 
 runClientJobStreaming :: (M m, NFData a) => URL -> (ClientError -> ClientJobError)
@@ -190,7 +194,7 @@ runClientJobStreaming :: (M m, NFData a) => URL -> (ClientError -> ClientJobErro
 runClientJobStreaming url err m = do
   env <- ask
   let cenv = SC.ClientEnv (env ^. cenv_manager) (url ^. base_url) Nothing
-  liftIO (SC.runClientM m cenv)
+  liftBase (SC.runClientM m cenv)
     >>= either (throwError . err) pure
 
 onRunningJob :: M m => RunningJob event input output
@@ -198,7 +202,7 @@ onRunningJob :: M m => RunningJob event input output
                     -> m ()
 onRunningJob job f = do
   env <- ask
-  liftIO . modifyMVar_ (env ^. cenv_jobs_mvar) $ pure . f (forgetRunningJob job)
+  liftBase . modifyMVar_ (env ^. cenv_jobs_mvar) $ pure . f (forgetRunningJob job)
 
 forgetRunningJob :: RunningJob event input output -> RunningJob event' input' output'
 forgetRunningJob (PrivateRunningJob u a i) = PrivateRunningJob u a i
@@ -225,14 +229,14 @@ clientStreamJob jurl input = do
       go (Skip s) = go s
       go (Error e) = pure $ Left $ FrameError e
       go (Effect m) = go =<< m
-    liftIO $ unSourceT src go
+    liftBase $ unSourceT src go
   either throwError pure out
 
 newEventChan :: (FromJSON error, FromJSON event, FromJSON output, M m)
              => m (ChanID 'Safe, IO (Either String (ChanMessage error event input output)))
 newEventChan = do
   env <- ask
-  (i, item) <- liftIO $ Core.newItem (env ^. cenv_chans . chans_env) newChan
+  (i, item) <- liftBase $ Core.newItem (env ^. cenv_chans . chans_env) newChan
   pure (i, Aeson.parseEither parseJSON <$> readChan (item ^. env_item))
 
 chanURL :: ClientEnv -> ChanID 'Safe -> URL
@@ -258,7 +262,7 @@ clientCallbackJob' jurl inner = do
 
   where
     loop readNextEvent = do
-      mmsg <- liftIO readNextEvent
+      mmsg <- liftBase readNextEvent
       case mmsg of
         Left err ->
           throwError $ DecodingChanMessageError err
@@ -330,10 +334,10 @@ clientPollJob job limit offset =
 killRunningJobs :: M m => m ()
 killRunningJobs = do
   env <- ask
-  jobs <- liftIO $ readMVar (env ^. cenv_jobs_mvar)
+  jobs <- liftBase $ readMVar (env ^. cenv_jobs_mvar)
   forM_ (Set.toList jobs) $ \job ->
     clientKillJob job (Just (Limit 0)) Nothing
-  liftIO . modifyMVar_ (env ^. cenv_jobs_mvar) $ \new ->
+  liftBase . modifyMVar_ (env ^. cenv_jobs_mvar) $ \new ->
     pure $ new `Set.difference` jobs
 
 isFinishedJob :: JobStatus 'Unsafe event -> Bool
@@ -343,7 +347,7 @@ fillLog :: (ToJSON event, FromJSON event, ToJSON input, FromJSON output, M m)
         => JobServerURL event input output -> RunningJob event input output -> Offset -> m ()
 fillLog jurl job pos = do
   env <- ask
-  liftIO . threadDelay $ env ^. cenv_polling_delay_ms
+  liftBase . threadDelay $ env ^. cenv_polling_delay_ms
   status <- retryOnTransientFailure $ clientPollJob job Nothing (Just pos)
   let events = status ^. job_log
   forM_ events $ progress . Event jurl (Just $ job ^. running_job_id)
@@ -388,15 +392,27 @@ callJobM jurl input = do
 
 newtype JobM a =
     JobM { _unMonadJobIO :: ReaderT ClientEnv (ExceptT ClientJobError IO) a }
-  deriving ( Functor, Applicative, Monad, MonadIO
-           , MonadReader ClientEnv, MonadError ClientJobError)
+  deriving ( Functor
+           , Applicative
+           , Monad
+           , MonadBase IO
+           --, MonadBaseControl IO
+           , MonadReader ClientEnv
+           , MonadError ClientJobError
+           )
+{-
+instance MonadBaseControl IO a => MonadBaseControl IO (JobM a) where
+  type StM JobM a = a
+  liftBaseWith f  = JobM $ liftBaseWith $ \q -> f (q . _unMonadJobIO)
+  restoreM = JobM . restoreM
+-}
 
 instance MonadJob JobM where
   callJob = callJobM
 
-runJobM :: MonadIO m => ClientEnv -> JobM a -> m (Either ClientJobError a)
-runJobM env (JobM m) = liftIO . runExceptT $ runReaderT m env
+runJobM :: MonadBaseControl IO m => ClientEnv -> JobM a -> m (Either ClientJobError a)
+runJobM env (JobM m) = liftBase . runExceptT $ runReaderT m env
 
-runJobMLog :: (FromJSON event, MonadIO m) => ClientEnv -> (event -> IO ()) -> JobM a -> m (Either ClientJobError a)
+runJobMLog :: (FromJSON event, MonadBaseControl IO m) => ClientEnv -> (event -> IO ()) -> JobM a -> m (Either ClientJobError a)
 runJobMLog env log_ =
   runJobM (env & cenv_log_event %~ forwardInnerEvents log_)

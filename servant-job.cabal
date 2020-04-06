@@ -4,7 +4,7 @@ cabal-version: 1.12
 --
 -- see: https://github.com/sol/hpack
 --
--- hash: 8bf7d10d6bf9901c55e78a625f6e4b0277ae8adc1cbdba5931d122ff64749449
+-- hash: c4600d42878b8604fae462fcde56c6c83135a1de16ca4b1dc96bb208c08663eb
 
 name:           servant-job
 version:        0.2.0.0
@@ -50,6 +50,7 @@ library
     , http-client
     , kan-extensions
     , lens
+    , monad-control
     , mtl
     , scientific
     , servant >=0.16
@@ -62,6 +63,7 @@ library
     , swagger2
     , text
     , time
+    , transformers-base
     , unordered-containers
   default-language: Haskell2010
 
@@ -84,6 +86,7 @@ executable servant-job-calc-example
     , http-client
     , kan-extensions
     , lens
+    , monad-control
     , mtl
     , scientific
     , servant >=0.16
@@ -97,6 +100,7 @@ executable servant-job-calc-example
     , swagger2
     , text
     , time
+    , transformers-base
     , unordered-containers
     , wai
     , warp
@@ -122,6 +126,7 @@ executable servant-job-scrapy-example
     , http-client-tls
     , kan-extensions
     , lens
+    , monad-control
     , mtl
     , scientific
     , servant >=0.16
@@ -135,6 +140,7 @@ executable servant-job-scrapy-example
     , swagger2
     , text
     , time
+    , transformers-base
     , unordered-containers
     , warp
   default-language: Haskell2010

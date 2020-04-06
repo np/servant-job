@@ -239,9 +239,6 @@ type AsyncJobAPI event output = AsyncJobAPI' 'Safe '[JSON] event output
 type AsyncJobsAPI event input output =
   Flat (AsyncJobsAPI' 'Unsafe 'Safe '[JSON] '[JSON] Maybe event input output)
 
-type AsyncJobsAPI2 event ctI input output =
-  Flat (AsyncJobsAPI' 'Unsafe 'Safe ctI '[JSON] Maybe event input output)
-
 type AsyncJobsServerT' ctI ctO callbacks event input output m =
   ServerT (Flat (AsyncJobsAPI' 'Unsafe 'Safe ctI ctO callbacks event input output)) m
 

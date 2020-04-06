@@ -91,6 +91,8 @@ import Control.Monad
 import Control.Monad.IO.Class
 import Control.Monad.Except
 import Control.Monad.Reader
+import Control.Monad.Base (liftBase)
+import Control.Monad.Trans.Control (MonadBaseControl(..))
 import Data.Aeson
 import qualified Data.ByteString.Lazy.Char8 as LBS
 import qualified Data.IntMap.Strict as IntMap
@@ -153,7 +155,7 @@ type MonadAsyncJobs' callbacks env err event output m =
 newJobEnv :: EnvSettings -> Manager -> IO (JobEnv event output)
 newJobEnv settings manager = JobEnv <$> newEnv settings <*> pure manager
 
-deleteJob :: (MonadIO m, MonadReader env m, HasEnv env (Job event output))
+deleteJob :: (MonadBaseControl IO m, MonadReader env m, HasEnv env (Job event output))
           => JobID 'Safe -> m ()
 deleteJob i = do
   env <- view _env
@@ -180,26 +182,26 @@ newtype JobFunction env err event input output = JobFunction
       forall m.
         ( MonadReader env m
         , MonadError  err m
-        , MonadIO         m
+        , MonadBaseControl IO m
         ) => input -> (event -> IO ()) -> m output
   }
 
 jobFunction :: ( forall m
                . ( MonadReader env m
                  , MonadError  err m
-                 , MonadIO         m
+                 , MonadBaseControl IO m
                  )
                  => (input -> (event -> m ()) -> m output)
                )
             -> JobFunction env err event input output
-jobFunction f = JobFunction (\i log -> f i (liftIO . log))
+jobFunction f = JobFunction (\i log -> f i (liftBase . log))
 
 type SimpleJobFunction event input output =
   JobFunction (JobEnv event output) ServerError event input output
 
 simpleJobFunction :: (input -> (event -> IO ()) -> IO output)
                   -> SimpleJobFunction event input output
-simpleJobFunction f = JobFunction (\i log -> liftIO (f i log))
+simpleJobFunction f = JobFunction (\i log -> liftBase (f i log))
 
 newJob :: forall callbacks env err event input output m
         . MonadAsyncJobs' callbacks env err event output m
@@ -213,7 +215,7 @@ newJob task i = do
     postCallback :: ChanMessage err event input output -> IO ()
     postCallback m =
       forM_ (i ^. job_callback) $ \url ->
-        liftIO (C.runClientM (clientMCallback m)
+        liftBase (C.runClientM (clientMCallback m)
                 (C.ClientEnv (jenv ^. jenv_manager)
                              (url ^. base_url) Nothing))
 
@@ -222,12 +224,12 @@ newJob task i = do
       postCallback $ mkChanEvent e
       modifyMVar_ m (pure . (e :))
 
-  liftIO $ do
+  liftBase $ do
     log <- newMVar []
     let mkJob = async $ do
           out <- runExceptT $
                   (`runReaderT` env) $
-                     runJobFunction task (i ^. job_input) (liftIO . pushLog log)
+                     runJobFunction task (i ^. job_input) (liftBase . pushLog log)
           postCallback $ either mkChanError mkChanResult out
           either throwIO pure out
 
@@ -240,14 +242,14 @@ newJob task i = do
     readLog = readMVar
 
 ioJobFunction :: (input -> IO output) -> JobFunction env err event input output
-ioJobFunction f = JobFunction (const . liftIO . f)
+ioJobFunction f = JobFunction (const . liftBase . f)
 
 pureJobFunction :: (input -> output) -> JobFunction env err event input output
 pureJobFunction = ioJobFunction . (pure .)
 
 newIOJob :: MonadAsyncJobs env err event output m
          => IO output -> m (JobStatus 'Safe event)
-newIOJob m = newJob (JobFunction (\_ _ -> liftIO m)) (JobInput () Nothing)
+newIOJob m = newJob (JobFunction (\_ _ -> liftBase m)) (JobInput () Nothing)
 
 getJob :: MonadAsyncJobs env err event output m => JobID 'Safe -> m (Job event output)
 getJob jid = view env_item <$> getItem jid
@@ -257,7 +259,7 @@ jobStatus jid limit offset log =
   JobStatus jid (maybe id (take . unLimit)  limit $
                  maybe id (drop . unOffset) offset log)
 
-pollJob :: MonadIO m => Maybe Limit -> Maybe Offset
+pollJob :: MonadBaseControl IO m => Maybe Limit -> Maybe Offset
         -> JobID 'Safe -> Job event a -> m (JobStatus 'Safe event)
 pollJob limit offset jid job = do
   -- It would be tempting to ensure that the log is consistent with the result
@@ -265,25 +267,25 @@ pollJob limit offset jid job = do
   -- log after polling the job. The edge case being that the log shows more
   -- items which would tell that the job is actually finished while the
   -- returned status is running.
-  r   <- liftIO . poll $ job ^. job_async
-  log <- liftIO $ job ^. job_get_log
+  r   <- liftBase . poll $ job ^. job_async
+  log <- liftBase $ job ^. job_get_log
   pure . jobStatus jid limit offset log
        $ maybe IsRunning (either (const IsFailure) (const IsFinished)) r
 
 
-killJob :: (MonadIO m, MonadReader env m, HasEnv env (Job event output))
+killJob :: (MonadBaseControl IO m, MonadReader env m, HasEnv env (Job event output))
         => Maybe Limit -> Maybe Offset
         -> JobID 'Safe -> Job event a -> m (JobStatus 'Safe event)
 killJob limit offset jid job = do
-  liftIO . cancel $ job ^. job_async
-  log <- liftIO $ job ^. job_get_log
+  liftBase . cancel $ job ^. job_async
+  log <- liftBase $ job ^. job_get_log
   deleteJob jid
   pure $ jobStatus jid limit offset log IsKilled
 
 waitJob :: MonadServantJob env err (Job event output) m
         => Bool -> JobID 'Safe -> Job event a -> m (JobOutput a)
 waitJob alsoDeleteJob jid job = do
-  r <- either err pure =<< liftIO (waitCatch $ job ^. job_async)
+  r <- either err pure =<< liftBase (waitCatch $ job ^. job_async)
   -- NOTE one might prefer not to deleteJob here and ask the client to
   -- manually killJob.
   --
@@ -351,7 +353,7 @@ instance ToJSON JobsStats where
 
 -- this API should be authorized to admins only
 serveJobEnvStats :: JobEnv event output -> Server (Get '[JSON] JobsStats)
-serveJobEnvStats env = liftIO $ do
+serveJobEnvStats env = liftBase $ do
   jobs <- view env_map <$> readMVar (env ^. jenv_jobs . env_state_mvar)
   active <- length <$> mapM (fmap isNothing . poll . view (env_item . job_async)) jobs
   pure $ JobsStats

@@ -26,6 +26,7 @@ dependencies:
 - http-client
 - kan-extensions
 - lens
+- monad-control
 - mtl
 - SHA
 - scientific
@@ -39,6 +40,7 @@ dependencies:
 - swagger2
 - text
 - time
+- transformers-base
 - unordered-containers
 
 library:

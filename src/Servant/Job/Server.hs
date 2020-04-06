@@ -35,6 +35,8 @@ import Control.Concurrent.MVar (newMVar)
 import Control.Lens
 import Control.Monad.IO.Class
 import Control.Monad.Reader
+import Control.Monad.Base (liftBase)
+import Control.Monad.Trans.Control (MonadBaseControl)
 import Data.Aeson
 import qualified Data.Set as Set
 import Network.HTTP.Client hiding (Proxy, path)
@@ -58,7 +60,7 @@ serveCallbacks
     wrap mk chanID' msg = do
       chanID <- checkID chanID'
       item <- Core.getItem chanID
-      liftIO $ writeChan (item ^. env_item) (toJSON $ mk msg)
+      liftBase $ writeChan (item ^. env_item) (toJSON $ mk msg)
 
 newChans :: MonadServantJobErr err m => EnvSettings -> URL -> IO (Chans, CallbacksServerT m)
 newChans settings url = do
