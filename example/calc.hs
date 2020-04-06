@@ -1,3 +1,4 @@
+{-# LANGUAGE FlexibleContexts             #-}
 {-# LANGUAGE TypeOperators                #-}
 {-# LANGUAGE DataKinds                    #-}
 {-# LANGUAGE DeriveGeneric                #-}
@@ -13,6 +14,7 @@ import Control.Lens
 import Control.Monad
 import Control.Monad.Reader
 import Control.Monad.Except
+import Control.Monad.Trans.Control
 import Data.Aeson
 import Data.Char (isDigit)
 import Data.Foldable
@@ -121,7 +123,7 @@ jobPolynomial sumU productU (P coefs input) = do
   ys <- zipWithM (\x y -> callJob productU [x,y]) coefs xs
   callJob sumU ys
 
-ioPolynomial :: MonadIO m
+ioPolynomial :: MonadBaseControl IO m
              => Env
              -> Maybe APIMode
              -> Maybe APIMode

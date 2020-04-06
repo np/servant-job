@@ -2,9 +2,11 @@
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE KindSignatures #-}
+{-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
@@ -12,13 +14,14 @@
 {-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE TypeOperators #-}
-{-# LANGUAGE MultiParamTypeClasses #-}
+{-# LANGUAGE UndecidableInstances #-}
 
 module Servant.Job.Client
   ( JobsAPI
   , MonadJob
   , callJob
 
+  , JobT
   , JobM
   , runJobM
   , runJobMLog
@@ -95,7 +98,8 @@ import Control.Monad.IO.Class
 import Control.Monad.Reader
 import Control.Monad.Except
 import Control.Monad.Base (MonadBase, liftBase)
-import Control.Monad.Trans.Control (MonadBaseControl(..))
+import Control.Monad.Trans.Class (MonadTrans(..))
+import Control.Monad.Trans.Control (MonadTransControl(..), defaultLiftWith2, defaultRestoreT2, MonadBaseControl(..), ComposeSt, defaultLiftBaseWith, defaultRestoreM)
 import Data.Aeson hiding (Error)
 import qualified Data.Aeson.Types as Aeson
 import Data.Set (Set)
@@ -390,28 +394,41 @@ callJobM jurl input = do
       progress $ Finished jurl Nothing
       pure out
 
-newtype JobM a =
-    JobM { _unMonadJobIO :: ReaderT ClientEnv (ExceptT ClientJobError IO) a }
+newtype JobT m a =
+    JobT { _unJobT :: ReaderT ClientEnv (ExceptT ClientJobError m) a }
   deriving ( Functor
            , Applicative
            , Monad
-           , MonadBase IO
-           --, MonadBaseControl IO
            , MonadReader ClientEnv
            , MonadError ClientJobError
            )
-{-
-instance MonadBaseControl IO a => MonadBaseControl IO (JobM a) where
-  type StM JobM a = a
-  liftBaseWith f  = JobM $ liftBaseWith $ \q -> f (q . _unMonadJobIO)
-  restoreM = JobM . restoreM
--}
 
-instance MonadJob JobM where
+instance MonadBase b m => MonadBase b (JobT m) where
+  liftBase f = JobT $ liftBase f
+
+instance MonadTrans JobT where
+  lift ma = JobT (lift (lift ma))
+
+instance MonadTransControl JobT where
+  type StT JobT a = StT (ReaderT ClientEnv) (StT (ExceptT ClientJobError) a)
+  liftWith = defaultLiftWith2 JobT _unJobT
+  restoreT = defaultRestoreT2 JobT
+
+instance MonadBaseControl b m => MonadBaseControl b (JobT m) where
+  type StM (JobT m) a = ComposeSt JobT m a
+  liftBaseWith = defaultLiftBaseWith
+  restoreM     = defaultRestoreM
+
+type JobM a = JobT IO a
+
+instance (Monad m, MonadBaseControl IO m) => MonadJob (JobT m) where
   callJob = callJobM
 
+runJobT :: MonadBaseControl b m => ClientEnv -> JobT b a -> m (Either ClientJobError a)
+runJobT env (JobT m) = liftBase . runExceptT $ runReaderT m env
+
 runJobM :: MonadBaseControl IO m => ClientEnv -> JobM a -> m (Either ClientJobError a)
-runJobM env (JobM m) = liftBase . runExceptT $ runReaderT m env
+runJobM = runJobT
 
 runJobMLog :: (FromJSON event, MonadBaseControl IO m) => ClientEnv -> (event -> IO ()) -> JobM a -> m (Either ClientJobError a)
 runJobMLog env log_ =

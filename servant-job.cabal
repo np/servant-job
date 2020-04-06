@@ -4,7 +4,7 @@ cabal-version: 1.12
 --
 -- see: https://github.com/sol/hpack
 --
--- hash: c4600d42878b8604fae462fcde56c6c83135a1de16ca4b1dc96bb208c08663eb
+-- hash: cca7b6cd86099c933f2c5ae623fae72675e03514fb7e4df4ac8d58de615a5e5a
 
 name:           servant-job
 version:        0.2.0.0
@@ -63,6 +63,7 @@ library
     , swagger2
     , text
     , time
+    , transformers
     , transformers-base
     , unordered-containers
   default-language: Haskell2010
@@ -100,6 +101,7 @@ executable servant-job-calc-example
     , swagger2
     , text
     , time
+    , transformers
     , transformers-base
     , unordered-containers
     , wai
@@ -140,6 +142,7 @@ executable servant-job-scrapy-example
     , swagger2
     , text
     , time
+    , transformers
     , transformers-base
     , unordered-containers
     , warp

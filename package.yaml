@@ -40,6 +40,7 @@ dependencies:
 - swagger2
 - text
 - time
+- transformers
 - transformers-base
 - unordered-containers
 
