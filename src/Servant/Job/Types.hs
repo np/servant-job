@@ -28,7 +28,6 @@ import GHC.Generics hiding (to)
 import Network.HTTP.Client hiding (Proxy, path)
 import Prelude hiding (log)
 import Servant
-import Servant.API.Flatten
 import Servant.Client hiding (manager, ClientEnv)
 import Servant.Job.Core as Core
 import Servant.Job.Utils (jsonOptions, swaggerOptions, (</>))
@@ -236,11 +235,13 @@ type AsyncJobsAPI' safetyI safetyO ctI ctO callbacks event input output
 
 type AsyncJobAPI event output = AsyncJobAPI' 'Safe '[JSON] event output
 
+type AsyncJobServerT event output m = ServerT (AsyncJobAPI event output) m
+
 type AsyncJobsAPI event input output =
-  Flat (AsyncJobsAPI' 'Unsafe 'Safe '[JSON] '[JSON] Maybe event input output)
+  AsyncJobsAPI' 'Unsafe 'Safe '[JSON] '[JSON] Maybe event input output
 
 type AsyncJobsServerT' ctI ctO callbacks event input output m =
-  ServerT (Flat (AsyncJobsAPI' 'Unsafe 'Safe ctI ctO callbacks event input output)) m
+  ServerT (AsyncJobsAPI' 'Unsafe 'Safe ctI ctO callbacks event input output) m
 
 type AsyncJobsServerT event input output m =
   AsyncJobsServerT' '[JSON] '[JSON] Maybe event input output m
@@ -330,7 +331,7 @@ instance ToSchema AnyError where
 
 type CallbacksAPI = Capture "id" (ChanID 'Unsafe) :> CallbackAPI AnyError AnyEvent AnyOutput
 
-type CallbacksServerT m = ServerT (Flat CallbacksAPI) m
+type CallbacksServerT m = ServerT CallbacksAPI m
 type CallbacksServer = CallbacksServerT Handler
 
 -- This is internally almost equivalent to JobInput
@@ -365,15 +366,13 @@ type CallbackJobsAPI' ctI ctO event input output =
 type CallbackJobsAPI event input output =
   CallbackJobsAPI' '[JSON, FormUrlEncoded] '[JSON] event input output
 
-type family   JobsAPI' (mode :: APIMode)
+type family   JobsAPI (mode :: APIMode)
                        (ctI :: [*]) ctO event input output
-type instance JobsAPI' 'Sync     ctI ctO event input output = SyncJobsAPI' ctI '[ctO] input output
-type instance JobsAPI' 'Stream   ctI ctO event input output = StreamJobsAPI' IO ctI ctO event input output
-type instance JobsAPI' 'Async    ctI ctO event input output = AsyncJobsAPI' 'Unsafe 'Safe ctI '[ctO] Maybe event input output
+type instance JobsAPI 'Sync     ctI ctO event input output = SyncJobsAPI' ctI '[ctO] input output
+type instance JobsAPI 'Stream   ctI ctO event input output = StreamJobsAPI' IO ctI ctO event input output
+type instance JobsAPI 'Async    ctI ctO event input output = AsyncJobsAPI' 'Unsafe 'Safe ctI '[ctO] Maybe event input output
 -- TODO provide also a version of Async without the callbacks
-type instance JobsAPI' 'Callback ctI ctO event input output = CallbackJobsAPI' ctI '[ctO] event input output
-
-type JobsAPI mode ctI ctO event input output = Flat (JobsAPI' mode ctI ctO event input output)
+type instance JobsAPI 'Callback ctI ctO event input output = CallbackJobsAPI' ctI '[ctO] event input output
 
 data ChanMessage error event input output = ChanMessage
   { _msg_event  :: !(Maybe event)

@@ -41,7 +41,6 @@ import Data.Aeson
 import qualified Data.Set as Set
 import Network.HTTP.Client hiding (Proxy, path)
 import Servant
-import Servant.API.Flatten
 import qualified Servant.Job.Core as Core
 import Servant.Job.Core
 import Servant.Job.Types
@@ -50,14 +49,14 @@ import Servant.Client hiding (manager, ClientEnv)
 -- See newChans
 serveCallbacks :: forall env err m. MonadServantJob env err (Chan Value) m
                => CallbacksServerT m
-serveCallbacks
+serveCallbacks chanID'
     =  wrap mkChanEvent
   :<|> wrap mkChanError
   :<|> wrap mkChanResult
 
   where
-    wrap :: (msg -> AnyChanMessage) -> ChanID 'Unsafe -> msg -> m ()
-    wrap mk chanID' msg = do
+    wrap :: (msg -> AnyChanMessage) -> msg -> m ()
+    wrap mk msg = do
       chanID <- checkID chanID'
       item <- Core.getItem chanID
       liftBase $ writeChan (item ^. env_item) (toJSON $ mk msg)
@@ -65,7 +64,7 @@ serveCallbacks
 newChans :: MonadServantJobErr err m => EnvSettings -> URL -> IO (Chans, CallbacksServerT m)
 newChans settings url = do
   env <- newEnv settings
-  let srv = hoistServer (Proxy :: Proxy (Flat CallbacksAPI)) (flip runReaderT env) serveCallbacks
+  let srv = hoistServer (Proxy :: Proxy CallbacksAPI) (flip runReaderT env) serveCallbacks
   pure (Chans env url, srv)
 
 newClientEnv :: Manager -> Chans -> LogEvent -> IO ClientEnv
@@ -76,7 +75,7 @@ newClientEnv manager chans log_event
   where
     oneSecond = 1000000
 
-type WithCallbacks api = "chans" :> Flat CallbacksAPI
+type WithCallbacks api = "chans" :> CallbacksAPI
                      :<|> api
 
 apiWithCallbacksServer :: forall api. HasServer api '[]

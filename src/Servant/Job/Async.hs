@@ -304,6 +304,24 @@ waitJob alsoDeleteJob jid job = do
   where
     err e = serverError $ err500 { errBody = LBS.pack $ show e }
 
+serveJobAPI :: forall env err event output m
+             . MonadAsyncJobs env err event output m
+            => JobID 'Unsafe
+            -> AsyncJobServerT event output m
+serveJobAPI jid'
+    =  wrap' killJob
+  :<|> wrap' pollJob
+  :<|> (wrap . waitJob) False
+
+  where
+    wrap :: forall a. (JobID 'Safe -> Job event output -> m a) -> m a
+    wrap g = do
+      jid <- checkID jid'
+      job <- getJob jid
+      g jid job
+
+    wrap' g limit offset = wrap (g limit offset)
+
 serveJobsAPI :: forall callbacks env err m event input output ctI ctO
               . MonadAsyncJobs' callbacks env err event output m
              => JobFunction env err event input output
@@ -311,18 +329,7 @@ serveJobsAPI :: forall callbacks env err m event input output ctI ctO
 serveJobsAPI f
     =  newJob f (JobInput undefined Nothing)
   :<|> newJob f
-  :<|> wrap' killJob
-  :<|> wrap' pollJob
-  :<|> (wrap . waitJob) False
-
-  where
-    wrap :: forall a. (JobID 'Safe -> Job event output -> m a) -> JobID 'Unsafe -> m a
-    wrap g jid' = do
-      jid <- checkID jid'
-      job <- getJob jid
-      g jid job
-
-    wrap' g jid' limit offset = wrap (g limit offset) jid'
+  :<|> serveJobAPI
 
 instance ToJSON ServerError where
   toJSON = toJSON . show

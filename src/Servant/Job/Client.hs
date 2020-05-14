@@ -117,9 +117,9 @@ import qualified Servant.Client.Streaming as SC
 import qualified Servant.Client.Internal.HttpClient.Streaming as SIC
 import Servant.Types.SourceT
 
-asyncJobsAPI :: proxy event input output
-             -> Proxy (Flat (AsyncJobsAPI' 'Unsafe 'Unsafe '[JSON] '[JSON] NoCallbacks event input output))
-asyncJobsAPI _ = Proxy
+flatAsyncJobsAPI :: proxy event input output
+                 -> Proxy (Flat (AsyncJobsAPI' 'Unsafe 'Unsafe '[JSON] '[JSON] NoCallbacks event input output))
+flatAsyncJobsAPI _ = Proxy
 
 type CallJobC event input output =
   ( ToJSON   input
@@ -302,7 +302,7 @@ clientNewJob :: (ToJSON input, FromJSON event, FromJSON output, M m)
              => JobServerURL event input output -> JobInput NoCallbacks input -> m (JobStatus 'Unsafe event)
 clientNewJob jurl = runClientJob (jurl ^. job_server_url) StartingJobError . newJobClient
   where
-    _ :<|> newJobClient :<|> _ :<|> _ :<|> _ = C.client $ asyncJobsAPI jurl
+    _ :<|> newJobClient :<|> _ :<|> _ :<|> _ = C.client $ flatAsyncJobsAPI jurl
 
 clientWaitJob :: (ToJSON input, FromJSON event, FromJSON output, M m)
               => RunningJob event input output -> m output
@@ -311,7 +311,7 @@ clientWaitJob job =
   where
     jurl = job ^. running_job_url
     jid  = job ^. running_job_id . to forgetID
-    _ :<|> _ :<|> _ :<|> _ :<|> waitJobClient = C.client $ asyncJobsAPI job
+    _ :<|> _ :<|> _ :<|> _ :<|> waitJobClient = C.client $ flatAsyncJobsAPI job
 
 clientKillJob :: (ToJSON input, FromJSON event, FromJSON output, M m)
               => RunningJob event input output
@@ -321,7 +321,7 @@ clientKillJob job limit offset =
   where
     jurl = job ^. running_job_url
     jid  = job ^. running_job_id
-    _ :<|> _ :<|> killJobClient :<|> _ :<|> _ = C.client $ asyncJobsAPI job
+    _ :<|> _ :<|> killJobClient :<|> _ :<|> _ = C.client $ flatAsyncJobsAPI job
 
 clientPollJob :: (ToJSON input, FromJSON event, FromJSON output, M m)
               => RunningJob event input output -> Maybe Limit -> Maybe Offset -> m (JobStatus 'Unsafe event)
@@ -330,7 +330,7 @@ clientPollJob job limit offset =
   where
     jurl = job ^. running_job_url
     jid  = job ^. running_job_id
-    _ :<|> _ :<|> _ :<|> clientMPollJob :<|> _ = C.client $ asyncJobsAPI job
+    _ :<|> _ :<|> _ :<|> clientMPollJob :<|> _ = C.client $ flatAsyncJobsAPI job
 
 -- NOTES:
 -- * retryOnTransientFailure ?
