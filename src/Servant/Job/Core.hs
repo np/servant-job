@@ -213,11 +213,11 @@ instance ToParamSchema (ID safety k) where
     & pattern ?~ "[0-9]+-[0-9]+s-[0-9a-f]{64}"
 
 instance KnownSymbol k => ToSchema (ID safety k) where
-  declareNamedSchema p = pure . NamedSchema (Just "ID") $ mempty
-    & title       ?~ T.pack k <> " identifier"
+  declareNamedSchema p = pure . NamedSchema (Just $ "ID " <> k) $ mempty
+    & title       ?~ k <> " identifier"
     & paramSchema .~ toParamSchema p
     where
-      k = symbolVal (Proxy :: Proxy k)
+      k = T.pack $ symbolVal (Proxy :: Proxy k)
 
 -- Default duration is one day
 defaultDuration :: NominalDiffTime
