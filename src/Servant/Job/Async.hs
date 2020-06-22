@@ -235,7 +235,7 @@ newJob task i = do
 
     (jid, _) <- newItem (jenv ^. jenv_jobs)
                         (Job <$> mkJob <*> pure (readLog log))
-    pure $ JobStatus jid [] IsRunning
+    pure $ JobStatus jid [] IsRunning Nothing
 
   where
     readLog :: MVar [event] -> IO [event]
@@ -254,7 +254,7 @@ newIOJob m = newJob (JobFunction (\_ _ -> liftBase m)) (JobInput () Nothing)
 getJob :: MonadAsyncJobs env err event output m => JobID 'Safe -> m (Job event output)
 getJob jid = view env_item <$> getItem jid
 
-jobStatus :: JobID 'Safe -> Maybe Limit -> Maybe Offset -> [event] -> States -> JobStatus 'Safe event
+jobStatus :: JobID 'Safe -> Maybe Limit -> Maybe Offset -> [event] -> States -> Maybe Text -> JobStatus 'Safe event
 jobStatus jid limit offset log =
   JobStatus jid (maybe id (take . unLimit)  limit $
                  maybe id (drop . unOffset) offset log)
@@ -269,8 +269,9 @@ pollJob limit offset jid job = do
   -- returned status is running.
   r   <- liftBase . poll $ job ^. job_async
   log <- liftBase $ job ^. job_get_log
-  pure . jobStatus jid limit offset log
-       $ maybe IsRunning (either (const IsFailure) (const IsFinished)) r
+  let st  = maybe IsRunning (either (const IsFailure) (const IsFinished)) r
+      err = maybe Nothing   (either Just (const Nothing)) r
+  pure $ jobStatus jid limit offset log st ((T.pack . show) <$> err)
 
 
 killJob :: (MonadBaseControl IO m, MonadReader env m, HasEnv env (Job event output))
@@ -280,7 +281,7 @@ killJob limit offset jid job = do
   liftBase . cancel $ job ^. job_async
   log <- liftBase $ job ^. job_get_log
   deleteJob jid
-  pure $ jobStatus jid limit offset log IsKilled
+  pure $ jobStatus jid limit offset log IsKilled Nothing
 
 waitJob :: MonadServantJob env err (Job event output) m
         => Bool -> JobID 'Safe -> Job event a -> m (JobOutput a)

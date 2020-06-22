@@ -208,6 +208,7 @@ data JobStatus safety event = JobStatus
   { _job_id     :: !(JobID safety)
   , _job_log    :: ![event]
   , _job_status :: !States -- TODO: should be a type Started | Finished ...
+  , _job_error  :: !(Maybe Text)
   }
   deriving Generic
 
