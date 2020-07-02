@@ -17,18 +17,24 @@ module Servant.Job.Utils ( module Servant.Job.Utils, trace ) where
 
 import Control.Concurrent (forkFinally)
 import Control.Concurrent.MVar (newEmptyMVar, takeMVar, putMVar)
+import Control.Lens ((?~))
 import Control.Monad.IO.Class
 import Data.Aeson hiding (Error)
 import Data.Aeson.Types hiding (Error)
 import Data.Maybe
-import Data.Swagger
+import Data.Swagger as S
+import Data.Swagger.Declare as S
+import Data.Swagger.Internal.Schema as S
+import Data.Swagger.Internal.TypeShape as S
 import Data.Text (Text)
+import Data.Typeable (Typeable, typeRep)
 import qualified Data.Text as T
 import Debug.Trace
 import Web.FormUrlEncoded
 import Servant
 import Servant.Types.SourceT
 import Servant.Client hiding (manager, ClientEnv)
+import GHC.Generics
 
 (</>) :: String -> String -> String
 "" </> x  = x
@@ -61,9 +67,24 @@ formOptions pref = defaultFormOptions
 
 swaggerOptions :: Text -> SchemaOptions
 swaggerOptions pref = defaultSchemaOptions
-  { Data.Swagger.fieldLabelModifier = modifier pref
-  , Data.Swagger.unwrapUnaryRecords = False
+  { S.fieldLabelModifier = modifier pref
+  , S.unwrapUnaryRecords = False
   }
+
+-- Waiting for https://github.com/GetShopTV/swagger2/issues/94
+wellNamedSchema ::
+     forall a.
+     ( Typeable a -- for the real full name
+     , Generic a
+     , S.GToSchema (Rep a)
+     , S.GenericHasSimpleShape a "genericDeclareNamedSchemaUnrestricted" (S.GenericShape (Rep a))
+     )
+  => Text
+  -> Proxy a
+  -> S.Declare (S.Definitions S.Schema) S.NamedSchema
+wellNamedSchema pref proxy =
+  (S.name ?~ (T.replace " " "_" . T.pack . show . typeRep) proxy) <$>
+  S.genericDeclareNamedSchema (swaggerOptions pref) proxy
 
 infixr 4 ?|
 

@@ -213,7 +213,7 @@ instance ToParamSchema (ID safety k) where
     & pattern ?~ "[0-9]+-[0-9]+s-[0-9a-f]{64}"
 
 instance KnownSymbol k => ToSchema (ID safety k) where
-  declareNamedSchema p = pure . NamedSchema (Just $ "ID " <> k) $ mempty
+  declareNamedSchema p = pure . NamedSchema (Just $ "ID_" <> k) $ mempty
     & title       ?~ k <> " identifier"
     & paramSchema .~ toParamSchema p
     where

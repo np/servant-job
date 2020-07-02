@@ -24,13 +24,14 @@ import Data.Set (Set)
 import Data.Swagger hiding (url, URL)
 import Data.Text (Text)
 import qualified Data.Text as T
+import Data.Typeable (Typeable)
 import GHC.Generics hiding (to)
 import Network.HTTP.Client hiding (Proxy, path)
 import Prelude hiding (log)
 import Servant
 import Servant.Client hiding (manager, ClientEnv)
 import Servant.Job.Core as Core
-import Servant.Job.Utils (jsonOptions, swaggerOptions, (</>))
+import Servant.Job.Utils (jsonOptions, swaggerOptions, (</>), wellNamedSchema)
 import Servant.Types.SourceT (SourceT)
 import Web.FormUrlEncoded
 
@@ -118,10 +119,10 @@ instance Alternative NoCallbacks where
   empty = NoCallbacks
   _ <|> _ = NoCallbacks
 
-instance ToSchema (NoCallbacks a) where
-  declareNamedSchema _ = pure $ NamedSchema (Just "NoCallbacks") $ mempty
-    & type_ ?~ SwaggerNull
-    & description ?~ "Only the `null` value."
+instance Typeable a => ToSchema (NoCallbacks a) where
+  declareNamedSchema proxy = wellNamedSchema "" proxy
+    & mapped . schema . type_ ?~ SwaggerNull
+    & mapped . schema . description ?~ "Only the `null` value."
 
 data JobInput f a = JobInput
   { _job_input    :: !a
@@ -161,8 +162,8 @@ instance FromForm input => FromForm (JobInput Maybe input) where
     JobInput <$> fromForm (Form (H.delete "input" (unForm f)))
              <*> parseMaybe "callback" f
 
-instance (ToSchema (f URL), ToSchema a) => ToSchema (JobInput f a) where
-  declareNamedSchema = genericDeclareNamedSchema (swaggerOptions "_job_") &
+instance (Typeable f, Typeable a, ToSchema (f URL), ToSchema a) => ToSchema (JobInput f a) where
+  declareNamedSchema = wellNamedSchema "_job_" &
     mapped . mapped . schema . required .~ ["input"]
 
 newtype JobOutput a = JobOutput
@@ -177,8 +178,8 @@ instance ToJSON output => ToJSON (JobOutput output) where
 instance FromJSON output => FromJSON (JobOutput output) where
   parseJSON = genericParseJSON $ jsonOptions "_job_"
 
-instance ToSchema a => ToSchema (JobOutput a) where
-  declareNamedSchema = genericDeclareNamedSchema $ swaggerOptions "_job_"
+instance (Typeable a, ToSchema a) => ToSchema (JobOutput a) where
+  declareNamedSchema = wellNamedSchema "_job_"
 
 instance NFData a => NFData (JobOutput a)
 
@@ -201,7 +202,7 @@ instance ToJSON States
 instance FromJSON States
 
 instance ToSchema States where
-  declareNamedSchema = genericDeclareNamedSchema $ swaggerOptions ""
+  declareNamedSchema = wellNamedSchema ""
 
 
 data JobStatus safety event = JobStatus
@@ -260,8 +261,8 @@ instance (safety ~ 'Safe, ToJSON event) => ToJSON (JobStatus safety event) where
 instance (safety ~ 'Unsafe, FromJSON event) => FromJSON (JobStatus safety event) where
   parseJSON = genericParseJSON $ jsonOptions "_job_"
 
-instance ToSchema event => ToSchema (JobStatus safety event) where
-  declareNamedSchema = genericDeclareNamedSchema $ swaggerOptions "_job_"
+instance (Typeable safety, Typeable event, ToSchema event) => ToSchema (JobStatus safety event) where
+  declareNamedSchema = wellNamedSchema "_job_"
 
 type SyncJobsAPI' ctI ctO input output =
   ReqBody ctI input :>
