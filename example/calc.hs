@@ -123,7 +123,7 @@ jobPolynomial sumU productU (P coefs input) = do
   ys <- zipWithM (\x y -> callJob productU [x,y]) coefs xs
   callJob sumU ys
 
-ioPolynomial :: MonadBaseControl IO m
+ioPolynomial :: (MonadBaseControl IO m, MonadFail m)
              => Env
              -> Maybe APIMode
              -> Maybe APIMode
