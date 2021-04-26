@@ -145,6 +145,9 @@ type MonadAsyncJobs env err event output m =
   , ToJSON event
   , ToJSON output
   , ToJSON err
+  , MimeRender JSON output
+  , MimeRender JSON err
+  , MimeRender JSON event
   )
 
 type MonadAsyncJobs' callbacks env err event output m =
@@ -204,7 +207,12 @@ simpleJobFunction :: (input -> (event -> IO ()) -> IO output)
 simpleJobFunction f = JobFunction (\i log -> liftBase (f i log))
 
 newJob :: forall callbacks env err event input output m
-        . MonadAsyncJobs' callbacks env err event output m
+        . ( MonadAsyncJobs' callbacks env err event output m
+          , MimeRender JSON event
+          , MimeRender JSON input
+          , MimeRender JSON output
+          , MimeRender JSON err
+          )
        => JobFunction env err event input output
        -> JobInput callbacks input -> m (JobStatus 'Safe event)
 newJob task i = do
@@ -212,12 +220,13 @@ newJob task i = do
   let
     jenv = env ^. job_env
 
-    postCallback :: ChanMessage err event input output -> IO ()
+    postCallback :: (MimeRender JSON err, MimeRender JSON output) => ChanMessage err event input output -> IO ()
     postCallback m =
       forM_ (i ^. job_callback) $ \url ->
         liftBase (C.runClientM (clientMCallback m)
-                (C.ClientEnv (jenv ^. jenv_manager)
-                             (url ^. base_url) Nothing))
+                 (C.mkClientEnv (jenv ^. jenv_manager)
+                               (url ^. base_url))
+                               )
 
     pushLog :: MVar [event] -> event -> IO ()
     pushLog m e = do
@@ -324,7 +333,7 @@ serveJobAPI jid'
     wrap' g limit offset = wrap (g limit offset)
 
 serveJobsAPI :: forall callbacks env err m event input output ctI ctO
-              . MonadAsyncJobs' callbacks env err event output m
+              . (MonadAsyncJobs' callbacks env err event output m, MimeRender JSON input)
              => JobFunction env err event input output
              -> AsyncJobsServerT' ctI ctO callbacks event input output m
 serveJobsAPI f
@@ -340,6 +349,9 @@ simpleServeJobsAPI :: forall event input output.
                       ( FromJSON input
                       , ToJSON   event
                       , ToJSON   output
+                      , MimeRender JSON input
+                      , MimeRender JSON output
+                      , MimeRender JSON event
                       )
                    => JobEnv event output
                    -> SimpleJobFunction event input output

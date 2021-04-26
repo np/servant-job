@@ -130,7 +130,7 @@ type CallJobC event input output =
   )
 
 class Monad m => MonadJob m where
-  callJob :: CallJobC event input output
+  callJob :: (CallJobC event input output, MimeRender JSON input)
           => JobServerURL event input output -> input -> m output
 
 data ClientJobError
@@ -189,7 +189,7 @@ progress event = do
 runClientJob :: M m => URL -> (ClientError -> ClientJobError) -> C.ClientM a -> m a
 runClientJob url err m = do
   env <- ask
-  let cenv = C.ClientEnv (env ^. cenv_manager) (url ^. base_url) Nothing
+  let cenv = C.mkClientEnv (env ^. cenv_manager) (url ^. base_url)
   liftBase (C.runClientM m cenv)
     >>= either (throwError . err) pure
 
@@ -197,7 +197,7 @@ runClientJobStreaming :: (M m, NFData a) => URL -> (ClientError -> ClientJobErro
                       -> SC.ClientM a -> m a
 runClientJobStreaming url err m = do
   env <- ask
-  let cenv = SC.ClientEnv (env ^. cenv_manager) (url ^. base_url) Nothing
+  let cenv = SC.mkClientEnv (env ^. cenv_manager) (url ^. base_url)
   liftBase (SC.runClientM m cenv)
     >>= either (throwError . err) pure
 
@@ -211,13 +211,13 @@ onRunningJob job f = do
 forgetRunningJob :: RunningJob event input output -> RunningJob event' input' output'
 forgetRunningJob (PrivateRunningJob u a i) = PrivateRunningJob u a i
 
-clientSyncJob :: (ToJSON input, ToJSON event, FromJSON event, FromJSON output, M m)
+clientSyncJob :: (ToJSON input, ToJSON event, FromJSON event, FromJSON output, M m, MimeRender JSON input)
               => JobServerURL event input output -> input -> m (JobOutput output)
 clientSyncJob jurl =
   runClientJob (jurl ^. job_server_url) StartingJobError .
     C.client (proxySyncJobsAPI jurl)
 
-clientStreamJob :: (CallJobC event input output, M m)
+clientStreamJob :: (CallJobC event input output, M m, MimeRender JSON input)
                 => JobServerURL event input output -> input -> m (JobOutput output)
 clientStreamJob jurl input = do
   LogEvent log_event <- view cenv_log_event
@@ -284,7 +284,7 @@ clientCallbackJob :: (ToJSON input, ToJSON event, FromJSON event, FromJSON outpu
 clientCallbackJob jurl input =
   clientCallbackJob' jurl $ C.client (callbackJobsAPI jurl) . CallbackInput input
 
-clientMCallback :: (ToJSON error, ToJSON event, ToJSON output)
+clientMCallback :: (ToJSON error, ToJSON event, ToJSON output, MimeRender JSON event, MimeRender JSON error, MimeRender JSON output)
                 => ChanMessage error event input output -> C.ClientM ()
 clientMCallback msg = do
   forM_ (msg ^. msg_event)  cli_event
@@ -294,7 +294,7 @@ clientMCallback msg = do
     (cli_event :<|> cli_error :<|> cli_result) =
         C.client (Proxy :: Proxy (CallbackAPI error event output))
 
-clientCallback :: (ToJSON error, ToJSON event, ToJSON output, M m)
+clientCallback :: (ToJSON error, ToJSON event, ToJSON output, M m, MimeRender JSON event, MimeRender JSON error, MimeRender JSON output)
                => URL -> ChanMessage error event input output -> m ()
 clientCallback cb_url = runClientJob cb_url CallbackError . clientMCallback
 
@@ -378,7 +378,7 @@ clientAsyncJob jurl i = do
   onRunningJob job Set.delete
   pure out
 
-callJobM :: (CallJobC event input output, M m)
+callJobM :: (CallJobC event input output, M m, MimeRender JSON input)
          => JobServerURL event input output -> input -> m output
 callJobM jurl input = do
   progress $ NewTask jurl

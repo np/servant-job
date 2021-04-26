@@ -1,3 +1,4 @@
-resolver: lts-16.14
+resolver:
+ url: https://raw.githubusercontent.com/commercialhaskell/stackage-snapshots/master/lts/17/10.yaml 
 extra-deps:
   - servant-flatten-0.2
