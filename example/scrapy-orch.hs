@@ -78,6 +78,9 @@ data ScraperInput = ScraperInput
 
 makeLenses ''ScraperInput
 
+instance ToJSON ScraperInput where
+  toJSON = genericToJSON $ jsonOptions "_scin_"
+
 instance FromJSON ScraperInput where
   parseJSON = genericParseJSON $ jsonOptions "_scin_"
 
