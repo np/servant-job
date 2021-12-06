@@ -183,10 +183,10 @@ newID :: KnownSymbol k => Proxy k -> SecretKey -> UTCTime -> Int -> ID 'Safe k
 newID p s t n = PrivateID tn n t $ macID tn s t n
   where tn = symbolVal p
 
-mkID :: KnownSymbol k => Proxy k -> Int -> UTCTime -> String -> ID 'Unsafe k
+mkID :: KnownSymbol k => Proxy k -> Int -> UTCTime -> String -> ID safety k
 mkID p n t d = PrivateID (symbolVal p) n t d
 
-instance (KnownSymbol k, safety ~ 'Unsafe) => FromHttpApiData (ID safety k) where
+instance (KnownSymbol k{- , safety ~ 'Unsafe -}) => FromHttpApiData (ID safety k) where
   parseUrlPiece s =
     case T.splitOn "-" s of
       [n, t, d] -> mkID (Proxy :: Proxy k)
@@ -201,7 +201,7 @@ instance {-safety ~ 'Safe =>-} ToHttpApiData (ID safety k) where
                       , toUrlPiece (utcTimeToPOSIXSeconds (j ^. id_time))
                       , toUrlPiece (j ^. id_token)]
 
-instance (KnownSymbol k, safety ~ 'Unsafe) => FromJSON (ID safety k) where
+instance (KnownSymbol k{-, safety ~ 'Unsafe -}) => FromJSON (ID safety k) where
   parseJSON s = either (fail . T.unpack) pure . parseUrlPiece =<< parseJSON s
 
 instance {-safety ~ 'Safe =>-} ToJSON (ID safety k) where

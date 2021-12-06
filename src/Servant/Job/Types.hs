@@ -255,10 +255,10 @@ type AsyncJobsServer event input output = AsyncJobsServerT event input output Ha
 
 makeLenses ''JobStatus
 
-instance (safety ~ 'Safe, ToJSON event) => ToJSON (JobStatus safety event) where
+instance ({- safety ~ 'Safe, -}ToJSON event) => ToJSON (JobStatus safety event) where
   toJSON = genericToJSON $ jsonOptions "_job_"
 
-instance (safety ~ 'Unsafe, FromJSON event) => FromJSON (JobStatus safety event) where
+instance ({- safety ~ 'Unsafe, -}FromJSON event) => FromJSON (JobStatus safety event) where
   parseJSON = genericParseJSON $ jsonOptions "_job_"
 
 instance (Typeable safety, Typeable event, ToSchema event) => ToSchema (JobStatus safety event) where

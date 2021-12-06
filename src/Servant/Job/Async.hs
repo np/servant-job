@@ -145,9 +145,6 @@ type MonadAsyncJobs env err event output m =
   , ToJSON event
   , ToJSON output
   , ToJSON err
-  , MimeRender JSON output
-  , MimeRender JSON err
-  , MimeRender JSON event
   )
 
 type MonadAsyncJobs' callbacks env err event output m =

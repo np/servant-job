@@ -212,13 +212,13 @@ serveAsyncCalcAPI env
   :<|> \sumA prodA pureA -> wrap (ioPolynomial env sumA prodA pureA)
 
   where
-    wrap :: (FromJSON i, ToJSON i, MimeRender JSON i) => ((Value -> IO ()) -> i -> IO Int) -> Maybe Delay
+    wrap :: (FromJSON i, ToJSON i) => ((Value -> IO ()) -> i -> IO Int) -> Maybe Delay
          -> Server (AsyncJobsAPI Value i Int)
     wrap f delayA =
       let wraplog log i = waitDelay delayA >> logConsole i >> log i in
       simpleServeJobsAPI (jobEnv env) (simpleJobFunction (\i log -> f (wraplog log) i))
 
-runClientCallbackIO :: (ToJSON error, ToJSON event, ToJSON input, ToJSON output, MimeRender JSON event, MimeRender JSON error, MimeRender JSON output)
+runClientCallbackIO :: (ToJSON error, ToJSON event, ToJSON input, ToJSON output)
                     => ClientEnv -> URL
                     -> ChanMessage error event input output
                     -> IO ()
