@@ -101,8 +101,8 @@ infixr 4 ?!
 data StepA a = StopA
              | YieldA a
              | ErrorA String
-          -- | SkipA
-          -- not yet needed
+          --   | SkipA
+          --   not yet needed
 
 fromActionStepA :: Functor m => m (StepA a) -> StepT m a
 fromActionStepA action = loop where
