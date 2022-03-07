@@ -186,6 +186,48 @@ newtype JobFunction env err event input output = JobFunction
         ) => input -> (event -> IO ()) -> m output
   }
 
+class MonadState event m => MonadPushEvent event m where
+  pushEvent :: (event -> event) -> m ()
+
+newtype PushEventT event m a = PushEventT { runPushEventT :: ((event -> event) -> StateT event m ()) -> StateT event m a }
+
+instance Monad (PushEventT event m) where
+
+instance MonadState (PushEventT event m) where
+  get = PushEventT $ const get
+  put = PushEventT . const . put
+
+instance MonadPushEvent event (PushEventT event m) where
+  pushEvent f = PushEventT $ \cb -> cb f
+
+newtype JobFunctionS env err event input output = JobFunction
+  { runJobFunctionS ::
+      forall m.
+        ( MonadReader env m
+        , MonadError  err m
+        , MonadPushEvent event m
+        , MonadBaseControl IO m
+        ) => input -> m output
+  }
+
+fromJobFunctionS :: JobFunctionS env err event input output -> JobFunction env err event input output
+fromJobFunctionS jf = JobFunction $ \input logEvent ->
+  let cb eventMod = do
+       s <- get
+       let s' = eventMod s
+       logEvent s'
+       put s'
+  in
+  runStateT (runPushEventT (runJobFunctionS jf input) cb) initEvent
+
+serveJobsAPI (fromJobFunctionS (JobFunctionS (\input -> do
+     ...
+     pushEvent (\old -> ... new)
+     s <- get
+     ...
+     pushEvent ...
+  )))
+
 jobFunction :: ( forall m
                . ( MonadReader env m
                  , MonadError  err m
